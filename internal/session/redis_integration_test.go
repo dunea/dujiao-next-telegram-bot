@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 )
 
@@ -27,6 +28,15 @@ func TestRedisAOFRestart(t *testing.T) {
 	ctx := context.Background()
 	switch phase {
 	case "seed":
+		for i, status := range []string{"sent", "posting", "retry"} {
+			key := callback.ReceiptKey(85001, callback.Event{OrderID: uint(700 + i)})
+			if _, err := r.CallbackReceipts().Update(ctx, key, func(s *callback.Receipt) error {
+				s.Events["order-paid"] = callback.Delivery{Fingerprint: key, Token: rand.Text(), Status: status, NotBefore: time.Now().Add(time.Hour)}
+				return nil
+			}); err != nil {
+				t.Fatal("seed callback receipt", err)
+			}
+		}
 		state := r.Update(85001, func(s *State) {
 			s.Locale, s.Flow = "en-US", "withdrawal"
 			s.Withdrawal = &WithdrawalDraft{ID: "aof-draft", MessageID: 17, Step: "confirm", Account: "AOF-TEST-ACCOUNT", ExpiresAt: time.Now().Add(10 * time.Minute)}
@@ -54,6 +64,16 @@ func TestRedisAOFRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	case "verify":
+		var callbackKeys []string
+		for i, status := range []string{"sent", "posting", "retry"} {
+			key := callback.ReceiptKey(85001, callback.Event{OrderID: uint(700 + i)})
+			s, err := r.CallbackReceipts().Update(ctx, key, func(*callback.Receipt) error { return nil })
+			if err != nil || s.Events["order-paid"].Status != status || !s.Events["order-paid"].NotBefore.After(time.Now()) {
+				t.Fatal("AOF lost callback receipt/cooldown", err)
+			}
+			callbackKeys = append(callbackKeys, r.prefix+":callback:v1:"+key)
+		}
+		callbackKeys = append(callbackKeys, r.prefix+":callback:index:v1")
 		state := r.Get(85001)
 		if state.Err != nil || state.Locale != "en-US" || state.Withdrawal == nil || state.Withdrawal.Account != "AOF-TEST-ACCOUNT" || state.Withdrawal.MessageID != 17 || state.WithdrawalGuard == nil || state.WithdrawalGuard.ID != "aof-guard" || state.WithdrawalGuard.ReviewMessageID != 31 {
 			t.Fatalf("AOF restart lost test state: %+v", state)
@@ -77,7 +97,7 @@ func TestRedisAOFRestart(t *testing.T) {
 		if state, _ := b.View(ctx); state.Job.Status != "paused" {
 			t.Fatal("restart resumed campaign automatically")
 		}
-		if err := r.client.Del(ctx, append(r.keys(85001), r.rateKey("aof-write"), b.keys()[1], b.subkeys()[1])...).Err(); err != nil {
+		if err := r.client.Del(ctx, append(append(r.keys(85001), r.rateKey("aof-write"), b.keys()[1], b.subkeys()[1]), callbackKeys...)...).Err(); err != nil {
 			t.Fatal(err)
 		}
 	default:

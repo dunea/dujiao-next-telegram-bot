@@ -30,7 +30,11 @@ func (a *App) ConfigureOperations(adminIDs []int64, policy ratelimit.Policy, aud
 }
 
 func (a *App) CallbackOptions() callback.Options {
-	return callback.Options{Limiter: a.limiter, Policy: a.limits, Audit: a.ops}
+	options := callback.Options{Limiter: a.limiter, Policy: a.limits, Audit: a.ops}
+	if provider, ok := a.sessions.(interface{ CallbackReceipts() callback.Receipts }); ok {
+		options.Receipts = provider.CallbackReceipts()
+	}
+	return options
 }
 
 func (a *App) allow(ctx context.Context, uid int64, bucket string, rule ratelimit.Rule) bool {

@@ -37,17 +37,19 @@ func TestCallbackPerUserLimitAndUntrustedForwardedHeader(t *testing.T) {
 	policy := ratelimit.DefaultPolicy()
 	policy.Callback.Limit = 1
 	policy.HTTP.Limit = 2
+	policy.Callback.Window = time.Hour
+	policy.HTTP.Window = time.Hour
 	h := New("key", "secret", notifier, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{Policy: policy})
-	for i := range 3 {
+	for i, want := range []int{200, 503, 429} {
 		r := signedRequest("42")
 		r.RemoteAddr = "192.0.2.1:1234"
 		r.Header.Set("X-Forwarded-For", fmt.Sprint(i))
 		response := httptest.NewRecorder()
 		h.ServeHTTP(response, r)
-		if i == 0 && response.Code != 200 {
-			t.Fatal(response.Code)
+		if response.Code != want {
+			t.Fatalf("request %d: got %d, want %d", i, response.Code, want)
 		}
-		if i > 0 && (response.Code != 429 || response.Header().Get("Retry-After") == "") {
+		if i > 0 && response.Header().Get("Retry-After") == "" {
 			t.Fatal("missing rate denial/retry header", response.Code)
 		}
 	}

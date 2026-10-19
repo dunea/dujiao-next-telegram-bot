@@ -44,6 +44,8 @@
 
 `main` 正在开发 `1.0.0-dev`。[兼容性矩阵与升级测试](docs/compatibility.md) 已加入固定源码证据、只读预检、Bot Redis 跨版本测试，以及三个官方 Dujiao-Next 镜像的真实联调和 SQLite/PostgreSQL 逐版本迁移、备份恢复测试。可运行 `make real-upstream-test` 复验；全部使用独立合成数据，不代表 v1.0 已正式发布或商家真实支付渠道已验收。
 
+开发版另补齐[支付/充值回调故障与 Telegram 全链路验收](docs/callbacks-and-e2e.md)：通知回执去重、Redis 重启恢复、Telegram 限流/断连处理；`make telegram-e2e` 在两种数据库上运行真实 Bot + 官方 v1.5.0 + 隔离 Telegram/支付模拟端点，不需要真实 Token。响应丢失时仍可能重复通知，不承诺消息恰好一次。
+
 ## 环境要求
 
 - Dujiao-Next `v1.5.0` 或兼容 Channel API 的版本

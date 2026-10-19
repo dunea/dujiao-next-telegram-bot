@@ -39,6 +39,7 @@ type stack struct {
 	t                                                           *testing.T
 	id, dir, driver, arch, api, pg, volume, base, adminPassword string
 	containers                                                  []string
+	images                                                      []string
 	client                                                      *http.Client
 	proxy                                                       *httptest.Server
 	dbName                                                      string
@@ -108,37 +109,7 @@ func newStack(t *testing.T, driver string) *stack {
 	// Internal Docker networks have no host-published ports. A loopback-only
 	// tunnel over docker exec gives the real Go client access without granting
 	// the upstream application an Internet route.
-	s.proxy = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Close = true
-		var request bytes.Buffer
-		if err := r.Write(&request); err != nil {
-			http.Error(w, "invalid test request", 502)
-			return
-		}
-		// Read the HTTP response as a stream, not via Cmd.Output: waiting for
-		// netcat's idle timeout after the response can manufacture client timeouts.
-		cmd := exec.CommandContext(r.Context(), "docker", "exec", "-i", s.api, "nc", "-w", "15", "127.0.0.1", "8080")
-		cmd.Stdin = bytes.NewReader(request.Bytes())
-		out, err := cmd.StdoutPipe()
-		if err != nil || cmd.Start() != nil {
-			http.Error(w, "isolated backend not ready", 502)
-			return
-		}
-		defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-		response, err := http.ReadResponse(bufio.NewReader(out), r)
-		if err != nil {
-			http.Error(w, "invalid backend response", 502)
-			return
-		}
-		defer response.Body.Close()
-		for key, values := range response.Header {
-			for _, value := range values {
-				w.Header().Add(key, value)
-			}
-		}
-		w.WriteHeader(response.StatusCode)
-		_, _ = io.Copy(w, response.Body)
-	}))
+	s.proxy = s.tunnel(func() string { return s.api }, "8080")
 	s.base = s.proxy.URL
 	s.docker("network", "create", "--internal", "--label", ownerLabel+"="+s.id, s.id)
 	for i := range releases {
@@ -162,9 +133,8 @@ func newStack(t *testing.T, driver string) *stack {
 			"--network", s.id, "--network-alias", "postgres", "--mount", "type=volume,src="+s.volume+",dst=/var/lib/postgresql/data",
 			"-e", "POSTGRES_USER=fixture", "-e", "POSTGRES_PASSWORD="+s.adminPassword, "-e", "POSTGRES_DB=fixture", postgresImage)
 		s.wait(func() bool {
-			// The official image starts a temporary Unix-socket-only server
-			// during initdb. Probe TCP so a fast runner cannot start the API
-			// before the final network-listening PostgreSQL process is ready.
+			// initdb temporarily starts a Unix-socket-only server. Require TCP
+			// readiness before starting the API, especially on fast CI runners.
 			_, err := s.command(nil, "exec", s.pg, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "fixture", "-d", "fixture")
 			return err == nil
 		})
@@ -211,6 +181,40 @@ telegram_auth:
 	return s
 }
 
+func (s *stack) tunnel(target func() string, port string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Close = true
+		var request bytes.Buffer
+		if err := r.Write(&request); err != nil {
+			http.Error(w, "invalid test request", 502)
+			return
+		}
+		// Read the HTTP response as a stream, not via Cmd.Output: waiting for
+		// netcat's idle timeout after the response can manufacture client timeouts.
+		cmd := exec.CommandContext(r.Context(), "docker", "exec", "-i", target(), "nc", "-w", "15", "127.0.0.1", port)
+		cmd.Stdin = bytes.NewReader(request.Bytes())
+		out, err := cmd.StdoutPipe()
+		if err != nil || cmd.Start() != nil {
+			http.Error(w, "isolated backend not ready", 502)
+			return
+		}
+		defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+		response, err := http.ReadResponse(bufio.NewReader(out), r)
+		if err != nil {
+			http.Error(w, "invalid backend response", 502)
+			return
+		}
+		defer response.Body.Close()
+		for key, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = io.Copy(w, response.Body)
+	}))
+}
+
 func (s *stack) ensureImage(ref string) {
 	// A digest-addressed local image is immutable; reuse it without another
 	// registry request. Fresh machines still pull the exact pinned manifest.
@@ -252,7 +256,7 @@ func (s *stack) start(i int, suffix string) {
 	s.t.Helper()
 	s.api = s.id + "-" + strings.TrimPrefix(releases[i].version, "v") + "-" + suffix
 	s.containers = append(s.containers, s.api)
-	s.docker("run", "-d", "--name", s.api, "--label", ownerLabel+"="+s.id, "--network", s.id,
+	s.docker("run", "-d", "--name", s.api, "--label", ownerLabel+"="+s.id, "--network", s.id, "--network-alias", "upstream",
 		"--mount", "type=bind,src="+filepath.Join(s.dir, "config.yml")+",dst=/app/config.yml,readonly",
 		"--mount", "type=bind,src="+s.dbDir+",dst=/app/db", s.image(i))
 	s.wait(func() bool {
@@ -294,11 +298,19 @@ func (s *stack) cleanup() {
 		}
 		logs, _ := s.command(nil, "logs", name)
 		_ = os.WriteFile(filepath.Join(s.dir, name+".log"), logs, 0600)
-		if name != s.pg && !strings.HasPrefix(name, s.id+"-redis-") {
+		if strings.HasSuffix(name, "-bot") {
+			_, _ = s.command(nil, "cp", name+":/tmp/audit.jsonl", filepath.Join(s.dir, name+"-audit.jsonl"))
+		} else if name != s.pg && !strings.HasPrefix(name, s.id+"-redis-") && !strings.HasSuffix(name, "-peer") {
 			_, _ = s.command(nil, "cp", name+":/app/logs", filepath.Join(s.dir, name+"-logs"))
 		}
 		_, _ = s.command(nil, "stop", "--time", "15", name)
 		_, _ = s.command(nil, "rm", name)
+	}
+	for _, ref := range s.images {
+		label, err := s.command(nil, "image", "inspect", "--format", `{{index .Config.Labels "`+ownerLabel+`"}}`, ref)
+		if err == nil && strings.TrimSpace(string(label)) == s.id {
+			_, _ = s.command(nil, "image", "rm", ref)
+		}
 	}
 	if !s.t.Failed() && s.volume != "" {
 		label, err := s.command(nil, "volume", "inspect", "--format", `{{index .Labels "`+ownerLabel+`"}}`, s.volume)

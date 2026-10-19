@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 )
 
@@ -143,6 +144,7 @@ func cloneState(state State) State {
 }
 
 type Memory struct {
+	callbacks     *callback.MemoryReceipts
 	broadcast     *broadcast.Memory
 	mu            sync.RWMutex
 	defaultLocale string

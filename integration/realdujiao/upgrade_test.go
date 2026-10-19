@@ -154,7 +154,7 @@ func (s *stack) seed() fixture {
 	var f fixture
 	// No Bot token or callback URL: the backend is exercised through the real
 	// channel API, not by running Telegram workers or callbacks to this Bot.
-	s.admin("POST", "/channel-clients", token, map[string]any{"name": "isolated-real-test", "channel_type": "telegram"}, &f)
+	s.admin("POST", "/channel-clients", token, map[string]any{"name": "isolated-real-test", "channel_type": "telegram_bot"}, &f)
 	if f.Key == "" || f.Secret == "" {
 		t.Fatal("channel credentials missing")
 	}

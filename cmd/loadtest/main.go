@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ func main() {
 	requests := flag.Int("n", 2000, "total request count")
 	concurrency := flag.Int("c", 50, "worker count")
 	users := flag.Int("users", 100, "synthetic callback users; use 1 to exercise the per-user rate limit")
-	expectLimit := flag.Bool("expect-rate-limit", false, "accept HTTP 429 and require at least one rate-limited response")
+	expectLimit := flag.Bool("expect-rate-limit", false, "accept explicit callback rate denials (429/503) and require one")
 	flag.Parse()
 	if *requests < 1 || *concurrency < 1 || *users < 1 {
 		fmt.Fprintln(os.Stderr, "n and c must be positive")
@@ -60,13 +61,10 @@ func main() {
 					failures.Add(1)
 					continue
 				}
-				_, _ = io.Copy(io.Discard, response.Body)
+				body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 				_ = response.Body.Close()
-				if response.StatusCode == http.StatusTooManyRequests && *expectLimit {
+				if *expectLimit && expectedRateLimit(response.StatusCode, response.Header.Get("Retry-After"), body) {
 					limited.Add(1)
-					if response.Header.Get("Retry-After") == "" {
-						failures.Add(1)
-					}
 				} else if response.StatusCode < 200 || response.StatusCode >= 300 {
 					failures.Add(1)
 				}
@@ -92,6 +90,16 @@ func main() {
 	if failures.Load() > 0 || (*expectLimit && limited.Load() == 0) {
 		os.Exit(1)
 	}
+}
+
+func expectedRateLimit(status int, retryAfter string, body []byte) bool {
+	if (status != http.StatusTooManyRequests && status != http.StatusServiceUnavailable) || retryAfter == "" {
+		return false
+	}
+	var result struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal(body, &result) == nil && result.Status == "rate_limited"
 }
 
 func makeRequest(baseURL, mode string, index, uid int) (*http.Request, error) {

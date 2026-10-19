@@ -149,6 +149,15 @@ func (a *App) Notify(ctx context.Context, userID int64, eventType string, event 
 	if err == nil {
 		a.ops.Record(operations.Event{Action: auditCallbackAction(eventType), Outcome: operations.Succeeded, UserID: userID, ResourceID: event.OrderID, Dedupe: sha256.Sum256([]byte(event.RechargeNo))})
 	}
+	if err != nil {
+		var limited *tgbot.TooManyRequestsError
+		if errors.As(err, &limited) {
+			return &callback.NotifyError{RetryAfter: time.Duration(min(3600, max(1, limited.RetryAfter))) * time.Second}
+		}
+		if errors.Is(err, tgbot.ErrorForbidden) {
+			return &callback.NotifyError{Permanent: true}
+		}
+	}
 	return err
 }
 

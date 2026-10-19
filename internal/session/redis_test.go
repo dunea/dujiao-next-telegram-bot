@@ -263,7 +263,10 @@ func TestRedisOutageAndDatasetLossFailClosed(t *testing.T) {
 
 // Inject failure before/after Redis actually commits the CAS, not just before
 // the caller's callback runs. Both are ambiguous to application code.
-type casFailureHook struct{ after bool }
+type casFailureHook struct {
+	after  bool
+	script string
+}
 
 func (h casFailureHook) DialHook(next redis.DialHook) redis.DialHook {
 	return next
@@ -273,7 +276,11 @@ func (h casFailureHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 }
 func (h casFailureHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if cmd.Name() == "eval" && cmd.Args()[1] == redisCAS {
+		script := h.script
+		if script == "" {
+			script = redisCAS
+		}
+		if cmd.Name() == "eval" && cmd.Args()[1] == script {
 			if h.after {
 				if err := next(ctx, cmd); err != nil {
 					return err
