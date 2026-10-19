@@ -16,6 +16,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -74,6 +75,9 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 		a.retryGiftCard(ctx, userID, input.ID)
 		return
 	}
+	if !a.allowWrite(ctx, chatID, userID, operations.GiftCard) {
+		return
+	}
 	claimed := false
 	claim := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.GiftCard; state.Flow == "gift_card" && current != nil && current.ID == input.ID && current.PromptID == input.PromptID && !current.Submitting && time.Now().Before(current.ExpiresAt) {
@@ -84,7 +88,9 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 	if !a.sessionOK(ctx, chatID, claim.Err) || !claimed {
 		return
 	}
+	op := a.ops.Begin(operations.GiftCard, userID, 0)
 	result, err := a.api.RedeemGiftCard(ctx, strconv.FormatInt(userID, 10), code)
+	op.End(financialOutcome(err), 0)
 	if err != nil {
 		text, retry := giftCardErrorText(state.Locale, err)
 		// Upstream error messages may include a submitted code; log metadata only.

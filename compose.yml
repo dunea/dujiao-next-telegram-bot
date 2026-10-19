@@ -4,6 +4,15 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      BOT_AUDIT_FILE: /var/lib/dujiao-bot/audit.jsonl
+    volumes:
+      - bot-audit:/var/lib/dujiao-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     ports:
       - "8444:8444"
     healthcheck:
@@ -12,3 +21,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  bot-audit:

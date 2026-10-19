@@ -14,6 +14,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -123,7 +124,12 @@ func (a *App) openAffiliate(ctx context.Context, message *models.Message, user *
 		return
 	}
 	locale := a.sessions.Get(user.ID).Locale
+	if !a.allowWrite(ctx, message.Chat.ID, user.ID, operations.Affiliate) {
+		return
+	}
+	op := a.ops.Begin(operations.Affiliate, user.ID, 0)
 	profile, err := a.api.OpenAffiliate(ctx, identityFromUser(user, locale))
+	op.End(financialOutcome(err), 0)
 	if err != nil {
 		a.affiliateFailure(ctx, message.Chat.ID, user.ID, err)
 		return

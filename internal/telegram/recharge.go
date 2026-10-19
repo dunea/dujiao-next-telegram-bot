@@ -13,6 +13,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -163,6 +164,9 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 	}
 	for _, channel := range draft.Channels {
 		if uint64(channel.ID) == channelID {
+			if !a.allowWrite(ctx, message.Chat.ID, userID, operations.Recharge) {
+				return
+			}
 			if a.claimRecharge(userID, draft.ID, message.ID, state.Flow) == nil {
 				return
 			}

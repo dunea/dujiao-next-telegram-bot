@@ -35,11 +35,21 @@ services:
       BOT_HTTP_LISTEN: :8444
       BOT_POLL_TIMEOUT: 2s
       BOT_LOG_LEVEL: info
+      # Isolated mock recipient; never a real Telegram user.
+      BOT_ADMIN_USER_IDS: "900001"
+      BOT_AUDIT_FILE: /var/lib/dujiao-bot/audit.jsonl
       BOT_REDIS_URL: redis://redis:6379/0
       # TEST ONLY: this public key must not be used for real receiving details.
       BOT_SESSION_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     ports:
       - "18444:8444"
+    volumes:
+      - test-bot-audit:/var/lib/dujiao-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       redis:
         condition: service_healthy
@@ -53,3 +63,4 @@ services:
 
 volumes:
   test-redis-sessions:
+  test-bot-audit:

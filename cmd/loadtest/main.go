@@ -22,8 +22,10 @@ func main() {
 	mode := flag.String("mode", "callback", "health or callback")
 	requests := flag.Int("n", 2000, "total request count")
 	concurrency := flag.Int("c", 50, "worker count")
+	users := flag.Int("users", 100, "synthetic callback users; use 1 to exercise the per-user rate limit")
+	expectLimit := flag.Bool("expect-rate-limit", false, "accept HTTP 429 and require at least one rate-limited response")
 	flag.Parse()
-	if *requests < 1 || *concurrency < 1 {
+	if *requests < 1 || *concurrency < 1 || *users < 1 {
 		fmt.Fprintln(os.Stderr, "n and c must be positive")
 		os.Exit(2)
 	}
@@ -37,6 +39,7 @@ func main() {
 	jobs := make(chan int)
 	durations := make(chan time.Duration, *requests)
 	var failures atomic.Int64
+	var limited atomic.Int64
 	var workers sync.WaitGroup
 	started := time.Now()
 
@@ -45,7 +48,7 @@ func main() {
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				request, err := makeRequest(*baseURL, *mode, index)
+				request, err := makeRequest(*baseURL, *mode, index, 42+index%*users)
 				if err != nil {
 					failures.Add(1)
 					continue
@@ -59,7 +62,12 @@ func main() {
 				}
 				_, _ = io.Copy(io.Discard, response.Body)
 				_ = response.Body.Close()
-				if response.StatusCode < 200 || response.StatusCode >= 300 {
+				if response.StatusCode == http.StatusTooManyRequests && *expectLimit {
+					limited.Add(1)
+					if response.Header.Get("Retry-After") == "" {
+						failures.Add(1)
+					}
+				} else if response.StatusCode < 200 || response.StatusCode >= 300 {
 					failures.Add(1)
 				}
 			}
@@ -78,19 +86,19 @@ func main() {
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 	elapsed := time.Since(started)
-	fmt.Printf("mode=%s requests=%d concurrency=%d failures=%d elapsed=%s throughput=%.1f req/s p50=%s p95=%s p99=%s\n",
-		*mode, *requests, *concurrency, failures.Load(), elapsed.Round(time.Millisecond), float64(*requests)/elapsed.Seconds(),
+	fmt.Printf("mode=%s requests=%d concurrency=%d failures=%d limited=%d elapsed=%s throughput=%.1f req/s p50=%s p95=%s p99=%s\n",
+		*mode, *requests, *concurrency, failures.Load(), limited.Load(), elapsed.Round(time.Millisecond), float64(*requests)/elapsed.Seconds(),
 		percentile(values, 50), percentile(values, 95), percentile(values, 99))
-	if failures.Load() > 0 {
+	if failures.Load() > 0 || (*expectLimit && limited.Load() == 0) {
 		os.Exit(1)
 	}
 }
 
-func makeRequest(baseURL, mode string, index int) (*http.Request, error) {
+func makeRequest(baseURL, mode string, index, uid int) (*http.Request, error) {
 	if mode == "health" {
 		return http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/healthz", nil)
 	}
-	body := []byte(`{"order_id":` + strconv.Itoa(index+1) + `,"telegram_user_id":"42"}`)
+	body := []byte(`{"order_id":` + strconv.Itoa(index+1) + `,"telegram_user_id":"` + strconv.Itoa(uid) + `"}`)
 	path := "/internal/order-paid"
 	timestamp := time.Now().Unix()
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+path, bytes.NewReader(body))

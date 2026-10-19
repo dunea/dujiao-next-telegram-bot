@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 	"github.com/go-telegram/bot/models"
 )
@@ -29,8 +30,11 @@ func persistentWithdrawalFixture(t *testing.T) (*App, *formFixture, func() *App,
 		return r
 	}
 	app.sessions = connect()
+	app.ConfigureOperations(nil, ratelimit.DefaultPolicy(), app.logger)
 	restart := func() *App {
-		return &App{bot: app.bot, api: app.api, sessions: connect(), logger: app.logger, config: app.botConfig(), runCtx: context.Background(), polls: make(map[uint]*activePaymentPoll)}
+		fresh := &App{bot: app.bot, api: app.api, sessions: connect(), logger: app.logger, config: app.botConfig(), runCtx: context.Background(), polls: make(map[uint]*activePaymentPoll)}
+		fresh.ConfigureOperations(nil, ratelimit.DefaultPolicy(), fresh.logger)
+		return fresh
 	}
 	return app, fixture, restart, server
 }

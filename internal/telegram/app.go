@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ import (
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -32,6 +35,9 @@ type App struct {
 	sessions session.Store
 	logger   *slog.Logger
 	runCtx   context.Context
+	ops      *operations.Service
+	limiter  ratelimit.Limiter
+	limits   ratelimit.Policy
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
@@ -64,7 +70,7 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		tgbot.WithWorkers(4),
 		tgbot.WithHTTPClient(pollTimeout, &http.Client{Timeout: pollTimeout + 10*time.Second}),
 		tgbot.WithDefaultHandler(app.handleUpdate),
-		tgbot.WithErrorsHandler(func(err error) { logger.Error("telegram polling error", "error", err) }),
+		tgbot.WithErrorsHandler(func(err error) { logger.Error("telegram polling error; check connectivity and token configuration") }),
 	}
 	if serverURL != "" {
 		options = append(options, tgbot.WithServerURL(strings.TrimRight(serverURL, "/")))
@@ -74,6 +80,7 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		return nil, fmt.Errorf("initialize Telegram bot: %w", err)
 	}
 	app.bot = bot
+	app.ConfigureOperations(nil, ratelimit.DefaultPolicy(), logger)
 	return app, nil
 }
 
@@ -81,6 +88,10 @@ func (a *App) Start(ctx context.Context) {
 	a.runCtxMu.Lock()
 	a.runCtx = ctx
 	a.runCtxMu.Unlock()
+	notificationCtx, stopNotifications := context.WithCancel(ctx)
+	notificationsDone := make(chan struct{})
+	go func() { defer close(notificationsDone); a.ops.Run(notificationCtx) }()
+	defer func() { stopNotifications(); <-notificationsDone }()
 	if _, err := a.bot.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{Commands: []models.BotCommand{
 		{Command: "start", Description: "打开商店 / Open store"},
 		{Command: "products", Description: "浏览商品 / Browse products"},
@@ -91,6 +102,7 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "affiliate", Description: "推广中心 / Affiliate"},
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
+		{Command: "whoami", Description: "查看 Telegram 用户 ID / My ID"},
 		{Command: "cancel", Description: "取消当前操作 / Cancel"},
 	}}); err != nil {
 		a.logger.Warn("set Telegram commands", "error", err)
@@ -125,6 +137,9 @@ func (a *App) Notify(ctx context.Context, userID int64, eventType string, event 
 		text += fmt.Sprintf("\n%s%d", tr(locale, "订单 ID：", "訂單 ID：", "Order ID: "), event.OrderID)
 	}
 	_, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: a.homeKeyboard(locale)})
+	if err == nil {
+		a.ops.Record(operations.Event{Action: auditCallbackAction(eventType), Outcome: operations.Succeeded, UserID: userID, ResourceID: event.OrderID, Dedupe: sha256.Sum256([]byte(event.RechargeNo))})
+	}
 	return err
 }
 
@@ -138,6 +153,24 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	}
 	message := update.Message
 	command, argument := parseCommand(message.Text)
+	if !a.allowIngress(ctx, message.Chat.ID, message.From.ID, command == "/cancel") {
+		return
+	}
+	if command == "/whoami" {
+		if message.Chat.ID == message.From.ID {
+			a.send(ctx, message.Chat.ID, fmt.Sprintf("Telegram 用户 ID：<code>%d</code>", message.From.ID), nil)
+		}
+		return
+	}
+	if command == "/admin" {
+		if message.Chat.ID != message.From.ID || !a.ops.IsAdmin(message.From.ID) {
+			a.ops.Record(operations.Event{Action: operations.Access, Outcome: operations.Blocked, UserID: message.From.ID})
+			return
+		}
+		a.ops.Record(operations.Event{Action: operations.AdminTest, Outcome: operations.Succeeded, UserID: message.From.ID})
+		a.send(ctx, message.Chat.ID, "管理员测试已记录（重复事件可能合并）；发送结果请查看审计日志。", nil)
+		return
+	}
 	state := a.sessions.Get(message.From.ID)
 	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
 		return
@@ -289,11 +322,15 @@ func (a *App) welcome(ctx context.Context, chatID, userID int64, locale string) 
 }
 
 func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
-	_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
 	message := query.Message.Message
 	if message == nil {
 		return
 	}
+	// Reject flooding before session reads and ACK with no extra chat message.
+	if !a.allowCallbackIngress(ctx, query) {
+		return
+	}
+	_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
 	state := a.sessions.Get(query.From.ID)
 	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
 		return
@@ -759,12 +796,14 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 		CouponCode:          couponCode,
 		AffiliateVisitorKey: affiliateVisitorKey(user.ID),
 	}
+	op := a.ops.Begin(operations.Order, user.ID, 0)
 	order, err := a.api.CreateOrder(ctx, request)
+	op.End(financialOutcome(err), order.OrderID)
 	if err != nil {
 		if isAPIError(err, "coupon_invalid") {
 			return err
 		}
-		a.logger.Error("create Dujiao order", "user_id", user.ID, "error", err)
+		a.logger.Error("create Dujiao order failed", "user_id", user.ID)
 		a.edit(ctx, chatID, messageID, tr(locale, "订单创建失败，请返回商品后重试。", "訂單建立失敗，請返回商品後再試。", "Could not create the order. Return to the product and try again."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
 		return err
 	}
@@ -789,10 +828,15 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 }
 
 func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, userID int64, orderID, channelID uint, useBalance bool) {
+	if !a.allowWrite(ctx, chatID, userID, operations.Payment) {
+		return
+	}
 	locale := a.sessions.Get(userID).Locale
+	op := a.ops.Begin(operations.Payment, userID, orderID)
 	result, err := a.api.CreatePayment(ctx, strconv.FormatInt(userID, 10), orderID, channelID, useBalance)
+	op.End(financialOutcome(err), orderID)
 	if err != nil {
-		a.logger.Error("create Dujiao payment", "order_id", orderID, "error", err)
+		a.logger.Error("create Dujiao payment failed", "order_id", orderID)
 		a.edit(ctx, chatID, messageID, tr(locale, "创建支付失败，可能是余额不足或支付方式暂不可用。", "建立付款失敗，可能是餘額不足或付款方式暫時無法使用。", "Could not create the payment. Your balance may be insufficient or the method unavailable."), a.homeKeyboard(locale))
 		return
 	}
@@ -1090,12 +1134,18 @@ func (a *App) confirmCancelOrder(ctx context.Context, chatID int64, messageID in
 }
 
 func (a *App) cancelOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	if !a.allowWrite(ctx, chatID, userID, operations.OrderCancel) {
+		return
+	}
 	locale := a.sessions.Get(userID).Locale
+	op := a.ops.Begin(operations.OrderCancel, userID, orderID)
 	if _, err := a.api.CancelOrder(ctx, strconv.FormatInt(userID, 10), orderID); err != nil {
-		a.logger.Error("cancel Dujiao order", "order_id", orderID, "error", err)
+		op.End(financialOutcome(err), orderID)
+		a.logger.Error("cancel Dujiao order failed", "order_id", orderID)
 		a.edit(ctx, chatID, messageID, tr(locale, "订单无法取消，可能已支付、已取消或已过期。", "訂單無法取消，可能已付款、已取消或已過期。", "The order cannot be cancelled. It may already be paid, cancelled, or expired."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}}}})
 		return
 	}
+	op.End(operations.Succeeded, orderID)
 	a.stopPaymentPoll(ctx, chatID, orderID)
 	a.showOrder(ctx, chatID, messageID, userID, orderID)
 }
@@ -1161,9 +1211,11 @@ func (a *App) showWalletTransactions(ctx context.Context, chatID, userID int64, 
 
 func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID int, userID int64, amount, currency string, channelID uint) {
 	locale := a.sessions.Get(userID).Locale
+	op := a.ops.Begin(operations.Recharge, userID, 0)
 	result, err := a.api.CreateWalletRecharge(ctx, strconv.FormatInt(userID, 10), amount, channelID)
+	op.End(financialOutcome(err), 0)
 	if err != nil {
-		a.logger.Error("create wallet recharge", "user_id", userID, "error", err)
+		a.logger.Error("create wallet recharge failed", "user_id", userID)
 		a.edit(ctx, chatID, messageID, tr(locale, "暂时无法确认充值单创建结果。请先查看钱包、交易流水及支付账户，避免重复付款；未确认前不要再次充值。", "暫時無法確認儲值單建立結果。請先查看錢包、交易明細及付款帳戶，避免重複付款；未確認前不要再次儲值。", "The recharge result could not be confirmed. Check your wallet, transactions and payment account before starting another recharge to avoid duplicate payments."), rechargeResultKeyboard(locale))
 		return
 	}

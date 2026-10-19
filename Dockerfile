@@ -9,7 +9,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dujiao-bot ./cmd/b
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S bot \
-    && adduser -S -G bot bot
+    && adduser -S -G bot bot \
+    && mkdir -p /var/lib/dujiao-bot \
+    && chown bot:bot /var/lib/dujiao-bot
 USER bot
 COPY --from=build /out/dujiao-bot /usr/local/bin/dujiao-bot
 EXPOSE 8444

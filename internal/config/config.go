@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 )
 
 type Config struct {
@@ -22,6 +26,9 @@ type Config struct {
 	LogLevel             string
 	RedisURL             string
 	SessionEncryptionKey string
+	AdminUserIDs         []int64
+	AuditFile            string
+	RatePolicy           ratelimit.Policy
 }
 
 func Load() (Config, error) {
@@ -36,9 +43,33 @@ func Load() (Config, error) {
 		LogLevel:             strings.ToLower(envOr("BOT_LOG_LEVEL", "info")),
 		RedisURL:             strings.TrimSpace(os.Getenv("BOT_REDIS_URL")),
 		SessionEncryptionKey: strings.TrimSpace(os.Getenv("BOT_SESSION_ENCRYPTION_KEY")),
+		AuditFile:            strings.TrimSpace(os.Getenv("BOT_AUDIT_FILE")),
 	}
 
 	var err error
+	if cfg.AdminUserIDs, err = operations.ParseAdminIDs(os.Getenv("BOT_ADMIN_USER_IDS")); err != nil {
+		return Config{}, err
+	}
+	cfg.RatePolicy = ratelimit.DefaultPolicy()
+	for _, item := range []struct {
+		key  string
+		rule *ratelimit.Rule
+	}{
+		{"BOT_RATE_USER_PER_MINUTE", &cfg.RatePolicy.User},
+		{"BOT_RATE_WRITE_PER_MINUTE", &cfg.RatePolicy.Write},
+		{"BOT_RATE_WITHDRAWAL_PER_10_MINUTES", &cfg.RatePolicy.Withdrawal},
+		{"BOT_RATE_CALLBACK_PER_MINUTE", &cfg.RatePolicy.Callback},
+		{"BOT_RATE_HTTP_PER_MINUTE", &cfg.RatePolicy.HTTP},
+		{"BOT_RATE_GLOBAL_PER_MINUTE", &cfg.RatePolicy.Global},
+	} {
+		if raw := strings.TrimSpace(os.Getenv(item.key)); raw != "" {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 1 || value > 100000 {
+				return Config{}, fmt.Errorf("%s must be between 1 and 100000", item.key)
+			}
+			item.rule.Limit = value
+		}
+	}
 	if cfg.PollTimeout, err = durationEnv("BOT_POLL_TIMEOUT", 30*time.Second); err != nil {
 		return Config{}, err
 	}

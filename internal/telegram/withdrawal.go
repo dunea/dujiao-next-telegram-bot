@@ -17,6 +17,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -98,6 +99,9 @@ func (a *App) startWithdrawal(ctx context.Context, chatID, userID int64) {
 		return
 	}
 	if state.WithdrawalGuard != nil {
+		if state.WithdrawalGuard.Status == "unknown" {
+			a.ops.Record(operations.Event{Action: operations.Withdrawal, Outcome: operations.Unknown, UserID: userID})
+		}
 		a.send(ctx, chatID, tr(state.Locale, "上一笔提现仍在核对、提交中或结果不明，暂不能再次申请。请先查看提现记录；结果不明时请联系商家核对。", "上一筆提領仍在核對、提交中或結果不明，暫時無法再次申請。請先查看提領紀錄；結果不明時請聯絡商家核對。", "A previous withdrawal is being checked/submitted or has an unknown result. Check withdrawal history and contact the store before applying again."), withdrawalResultKeyboard(state.Locale))
 		return
 	}
@@ -287,6 +291,13 @@ func (a *App) handleWithdrawalCallback(ctx context.Context, query *models.Callba
 		if len(parts) != 2 {
 			return
 		}
+		guard := state.WithdrawalGuard
+		if guard == nil || guard.Status != "unknown" || guard.ID != parts[1] || guard.ReviewMessageID == 0 || guard.ReviewMessageID != message.ID {
+			return
+		}
+		if !a.allowWrite(ctx, message.Chat.ID, userID, operations.WithdrawalUnlock) {
+			return
+		}
 		cleared := false
 		result := a.sessions.Update(userID, func(state *session.State) {
 			if guard := state.WithdrawalGuard; guard != nil && guard.Status == "unknown" && guard.ID == parts[1] && guard.ReviewMessageID != 0 && guard.ReviewMessageID == message.ID {
@@ -295,6 +306,7 @@ func (a *App) handleWithdrawalCallback(ctx context.Context, query *models.Callba
 			}
 		})
 		if a.sessionOK(ctx, message.Chat.ID, result.Err) && cleared {
+			a.ops.Record(operations.Event{Action: operations.WithdrawalUnlock, Outcome: operations.Succeeded, UserID: userID})
 			a.edit(ctx, message.Chat.ID, message.ID, tr(state.Locale, "已解除本地重试保护。请确认上一笔结果后再发起新的申请；本操作不会撤回或删除商店中的申请。", "已解除本機重試保護。請確認上一筆結果後再發起新申請；本操作不會撤回或刪除商店中的申請。", "Local retry protection cleared. Verify the previous result before starting a new request. This does not cancel or delete a store-side request."), withdrawalResultKeyboard(state.Locale))
 		}
 		return
@@ -378,6 +390,13 @@ func (a *App) cancelWithdrawalInput(userID int64, id string) bool {
 }
 
 func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session.WithdrawalDraft) {
+	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, draft.ChatID, state.Err) || state.Withdrawal == nil || state.Withdrawal.ID != draft.ID || state.Withdrawal.Busy || state.WithdrawalGuard != nil {
+		return
+	}
+	if !a.allowWrite(ctx, draft.ChatID, userID, operations.Withdrawal) {
+		return
+	}
 	// The lease outlives the entire request deadline. Expiry only enables manual
 	// reconciliation, never resubmission of this draft.
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -424,10 +443,16 @@ func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session
 		return
 	}
 	a.edit(ctx, draft.ChatID, draft.MessageID, tr(locale, "提现申请正在提交，请勿重复操作。", "提領申請正在送出，請勿重複操作。", "Submitting the withdrawal request. Do not repeat this action."), nil)
+	op := a.ops.Begin(operations.Withdrawal, userID, 0)
 	result, err := a.api.ApplyAffiliateWithdrawal(ctx, dujiao.AffiliateWithdrawalRequest{ChannelUserID: strconv.FormatInt(userID, 10), Amount: draft.Amount, Channel: draft.Channel, Account: draft.Account})
 	if err != nil {
 		a.logAffiliateFailure(userID, "withdrawal submission failed", err)
 		text, definitive := withdrawalErrorText(locale, err)
+		outcome := operations.Unknown
+		if definitive {
+			outcome = operations.Rejected
+		}
+		op.End(outcome, 0)
 		if definitive {
 			a.clearWithdrawal(userID, draft.ID, true)
 		} else {
@@ -444,6 +469,7 @@ func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session
 		a.edit(ctx, draft.ChatID, draft.MessageID, text, withdrawalResultKeyboard(locale))
 		return
 	}
+	op.End(operations.Succeeded, result.ID)
 	cleanupErr := a.clearWithdrawal(userID, draft.ID, true)
 	text := "✅ " + tr(locale, "提现申请已记录", "提領申請已記錄", "Withdrawal request recorded") + fmt.Sprintf("\n\n#%d\n", result.ID) + affiliateMoney(result.Amount, draft.Currency) + "\n" + html.EscapeString(result.Channel) + " · <code>" + html.EscapeString(maskAffiliateAccount(draft.Account)) + "</code>\n" + tr(locale, "状态：", "狀態：", "Status: ") + affiliateStatus(locale, result.Status)
 	text += "\n\n" + tr(locale, "提交申请不等于已到账，请在提现记录中查看商店审核及打款结果。", "送出申請不等於已入帳，請在提領紀錄中查看商店審核與匯款結果。", "Submission does not mean funds arrived. Check history for the merchant's review and payment result.")

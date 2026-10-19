@@ -15,6 +15,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/manualform"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
@@ -346,6 +347,9 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 }
 
 func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session.PurchaseDraft) {
+	if !a.allowWrite(ctx, draft.ChatID, user.ID, operations.Order) {
+		return
+	}
 	claimed := false
 	claim := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && current.Ready && !current.Submitting && time.Now().Before(current.ExpiresAt) {

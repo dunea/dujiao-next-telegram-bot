@@ -35,11 +35,20 @@ services:
       BOT_HTTP_LISTEN: :8444
       BOT_POLL_TIMEOUT: 30s
       BOT_LOG_LEVEL: info
+      BOT_ADMIN_USER_IDS: ${BOT_ADMIN_USER_IDS:-}
+      BOT_AUDIT_FILE: /var/lib/dujiao-bot/audit.jsonl
       BOT_REDIS_URL: redis://redis:6379/0
       # DEMO ONLY: never use this public encryption key for a real shop.
       BOT_SESSION_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     ports:
       - "19444:8444"
+    volumes:
+      - demo-bot-audit:/var/lib/dujiao-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       redis:
         condition: service_healthy
@@ -53,3 +62,4 @@ services:
 
 volumes:
   demo-redis-sessions:
+  demo-bot-audit:

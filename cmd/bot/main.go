@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/config"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
@@ -35,6 +37,15 @@ func run() error {
 		return fmt.Errorf("load configuration: %w", err)
 	}
 	logger := newLogger(cfg.LogLevel)
+	var auditWriter io.Writer = os.Stdout
+	if cfg.AuditFile != "" {
+		file, err := operations.OpenAuditFile(cfg.AuditFile, 10<<20, 5)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		auditWriter = io.MultiWriter(os.Stdout, file)
+	}
 
 	api, err := dujiao.NewClient(cfg.DujiaoBaseURL, cfg.DujiaoChannelKey, cfg.DujiaoChannelSecret, cfg.PollTimeout)
 	if err != nil {
@@ -73,6 +84,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Audit INFO records remain enabled even when application logs use WARN/ERROR.
+	app.ConfigureOperations(cfg.AdminUserIDs, cfg.RatePolicy, slog.New(slog.NewJSONHandler(auditWriter, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -85,16 +98,19 @@ func run() error {
 		}
 	}()
 	go heartbeatLoop(ctx, logger, api, app)
+	appDone := make(chan struct{})
 	go func() {
+		defer close(appDone)
 		logger.Info("Telegram bot started", "version", version)
 		app.Start(ctx)
 	}()
 
+	var runErr error
 	select {
 	case <-ctx.Done():
 	case err := <-serverErrors:
 		stop()
-		return fmt.Errorf("health server: %w", err)
+		runErr = fmt.Errorf("health server: %w", err)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -102,8 +118,13 @@ func run() error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("shutdown health server", "error", err)
 	}
+	select {
+	case <-appDone:
+	case <-shutdownCtx.Done():
+		logger.Warn("bot shutdown deadline reached")
+	}
 	logger.Info("Telegram bot stopped")
-	return nil
+	return runErr
 }
 
 func heartbeatLoop(ctx context.Context, logger *slog.Logger, api *dujiao.Client, app *telegramapp.App) {
@@ -144,11 +165,17 @@ func httpServer(address, channelKey, channelSecret string, notifier callback.Not
 		}
 		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
 	})
-	callback.New(channelKey, channelSecret, notifier, logger).Register(mux)
+	var callbackOptions []callback.Options
+	if provider, ok := notifier.(interface{ CallbackOptions() callback.Options }); ok {
+		callbackOptions = append(callbackOptions, provider.CallbackOptions())
+	}
+	callback.New(channelKey, channelSecret, notifier, logger, callbackOptions...).Register(mux)
 	return &http.Server{
 		Addr:              address,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       30 * time.Second,
 	}
 }
