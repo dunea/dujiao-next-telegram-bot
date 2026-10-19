@@ -26,6 +26,8 @@ github.com/yeqown/go-qrcode/writer/standard v1.4.0 h1:DccxxFt/Nu1gdL0kXf1dOwuqDe
 github.com/yeqown/go-qrcode/writer/standard v1.4.0/go.mod h1:PnbqAQGDQ/1osHXVfuDfc6UpCdXwBWoXkWn3HwUGgp4=
 github.com/yeqown/reedsolomon v1.0.0 h1:x1h/Ej/uJnNu8jaX7GLHBWmZKCAWjEJTetkqaabr4B0=
 github.com/yeqown/reedsolomon v1.0.0/go.mod h1:P76zpcn2TCuL0ul1Fso373qHRc69LKwAw/Iy6g1WiiM=
+github.com/yeqown/reedsolomon v1.0.1-0.20260308105121-c5f4bc9af094 h1:TSpzd6NyjoQrKdtxE9xFby1wD/NU4WSKD6lxxnOS7Yo=
+github.com/yeqown/reedsolomon v1.0.1-0.20260308105121-c5f4bc9af094/go.mod h1:P76zpcn2TCuL0ul1Fso373qHRc69LKwAw/Iy6g1WiiM=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=

@@ -13,7 +13,7 @@ sha256sum dujiao-next-telegram-bot_v0.4.0_linux_amd64.tar.gz
 shasum -a 256 dujiao-next-telegram-bot_v0.4.0_darwin_arm64.tar.gz
 ```
 
-将输出与 `checksums.txt` 中对应文件的摘要比较后再解压。每个包仅含程序、构建信息、`.env.example`、许可证和公开文档，不包含 `.env`、商店数据、密钥、日志或演示 Token。`build-info.txt` 含 Go 构建信息和源码提交号。SHA-256 用于完整性校验，不是独立的代码签名或供应链证明。
+将输出与 `checksums.txt` 中对应文件的摘要比较后再解压。每个包仅含程序、构建信息、`.env.example`、许可证和公开文档，不包含 `.env`、商店数据、密钥、日志或演示 Token。`build-info.txt` 含 Go 构建信息和源码提交号，`third-party/` 与 `THIRD_PARTY_NOTICES.md` 保留依赖版权和授权说明。SHA-256 用于完整性校验，不是独立的代码签名或供应链证明。
 
 ```bash
 ./dujiao-next-telegram-bot --version

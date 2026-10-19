@@ -17,7 +17,7 @@ require (
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/yeqown/reedsolomon v1.0.0 // indirect
+	github.com/yeqown/reedsolomon v1.0.1-0.20260308105121-c5f4bc9af094 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
