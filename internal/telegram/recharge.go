@@ -36,10 +36,13 @@ func (a *App) askRechargeAmount(ctx context.Context, chatID, userID int64, edit 
 		return
 	}
 	draft := &session.RechargeDraft{ID: rand.Text(), ChatID: chatID, Currency: wallet.Currency, ExpiresAt: time.Now().Add(10 * time.Minute)}
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		state.Flow, state.Recharge = "recharge_amount", draft
 		state.Purchase, state.GiftCard = nil, nil
 	})
+	if !a.sessionOK(ctx, chatID, result.Err) {
+		return
+	}
 	rows := [][]models.InlineKeyboardButton{{}, {}}
 	for i, amount := range rechargePresets {
 		row := 0
@@ -70,7 +73,7 @@ func (a *App) publishRecharge(ctx context.Context, userID int64, draft *session.
 	if err != nil {
 		a.logger.Warn("show recharge selection", "user_id", userID, "error", err)
 	}
-	a.sessions.Update(userID, func(state *session.State) {
+	stored := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.Recharge; current != nil && current.ID == draft.ID {
 			if err != nil {
 				state.Recharge, state.Flow = nil, ""
@@ -79,6 +82,7 @@ func (a *App) publishRecharge(ctx context.Context, userID int64, draft *session.
 			}
 		}
 	})
+	a.sessionOK(ctx, draft.ChatID, stored.Err)
 }
 
 func (a *App) claimRecharge(userID int64, id string, messageID int, flow string) *session.RechargeDraft {
@@ -89,7 +93,7 @@ func (a *App) claimRecharge(userID int64, id string, messageID int, flow string)
 			claimed = true
 		}
 	})
-	if !claimed {
+	if state.Err != nil || !claimed {
 		return nil
 	}
 	return state.Recharge
@@ -113,11 +117,14 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 			}
 			next := *draft
 			next.ID, next.Custom, next.MessageID, next.Submitting = rand.Text(), true, 0, false
-			a.sessions.Update(userID, func(state *session.State) {
+			result := a.sessions.Update(userID, func(state *session.State) {
 				if state.Recharge != nil && state.Recharge.ID == draft.ID {
 					state.Recharge = &next
 				}
 			})
+			if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
+				return
+			}
 			text := tr(state.Locale, "请回复这条消息输入充值金额（大于 0，最多两位小数，上限 1,000,000）。发送 /cancel 取消。\n币种：", "請回覆這則訊息輸入儲值金額（大於 0，最多兩位小數，上限 1,000,000）。傳送 /cancel 取消。\n幣別：", "Reply with an amount greater than 0, up to 2 decimal places, maximum 1,000,000. Send /cancel to cancel.\nCurrency: ") + html.EscapeString(draft.Currency)
 			a.publishRecharge(ctx, userID, &next, 0, false, text, models.ForceReply{ForceReply: true, Selective: true})
 			return
@@ -138,13 +145,13 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 			next := *draft
 			next.ID, next.Page, next.Submitting = rand.Text(), page, false
 			changed := false
-			a.sessions.Update(userID, func(state *session.State) {
+			result := a.sessions.Update(userID, func(state *session.State) {
 				if state.Recharge != nil && state.Recharge.ID == draft.ID {
 					state.Recharge = &next
 					changed = true
 				}
 			})
-			if changed {
+			if a.sessionOK(ctx, message.Chat.ID, result.Err) && changed {
 				a.showRechargeChannels(ctx, userID, &next, true)
 			}
 		}
@@ -160,11 +167,14 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 				return
 			}
 			// Consume before the write. An uncertain network result must not retry it.
-			a.sessions.Update(userID, func(state *session.State) {
+			consumed := a.sessions.Update(userID, func(state *session.State) {
 				if state.Recharge != nil && state.Recharge.ID == draft.ID {
 					state.Recharge, state.Flow = nil, ""
 				}
 			})
+			if !a.sessionOK(ctx, message.Chat.ID, consumed.Err) {
+				return
+			}
 			a.createWalletRecharge(ctx, message.Chat.ID, message.ID, userID, draft.Amount, draft.Currency, channel.ID)
 			return
 		}
@@ -196,11 +206,14 @@ func (a *App) selectRechargeAmount(ctx context.Context, userID int64, draft *ses
 	locale := a.sessions.Get(userID).Locale
 	channels, err := a.api.RechargeChannels(ctx)
 	if err != nil || len(channels.Items) == 0 {
-		a.sessions.Update(userID, func(state *session.State) {
+		stored := a.sessions.Update(userID, func(state *session.State) {
 			if state.Recharge != nil && state.Recharge.ID == draft.ID {
 				state.Recharge.Submitting = false
 			}
 		})
+		if !a.sessionOK(ctx, draft.ChatID, stored.Err) {
+			return
+		}
 		if err != nil {
 			a.apiFailure(ctx, draft.ChatID, locale, "list recharge channels", err)
 		} else {
@@ -211,13 +224,13 @@ func (a *App) selectRechargeAmount(ctx context.Context, userID int64, draft *ses
 	next := *draft
 	next.ID, next.Amount, next.Channels, next.Submitting = rand.Text(), amount, channels.Items, false
 	changed := false
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		if state.Recharge != nil && state.Recharge.ID == draft.ID && time.Now().Before(state.Recharge.ExpiresAt) {
 			state.Recharge, state.Flow = &next, "recharge_channels"
 			changed = true
 		}
 	})
-	if !changed {
+	if !a.sessionOK(ctx, draft.ChatID, result.Err) || !changed {
 		return
 	}
 	a.showRechargeChannels(ctx, userID, &next, !draft.Custom)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/config"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
 
@@ -55,7 +57,19 @@ func run() error {
 	if defaultLocale == "" {
 		defaultLocale = cfg.DefaultLocale
 	}
-	app, err := telegramapp.New(token, api, botConfig.Config, defaultLocale, cfg.PollTimeout, cfg.TelegramAPIURL, logger)
+	var sessions session.Store = session.NewMemory(defaultLocale)
+	if cfg.RedisURL != "" {
+		scope := sha256.Sum256([]byte(cfg.DujiaoBaseURL + "\x00" + cfg.DujiaoChannelKey))
+		sessions, err = session.NewRedis(cfg.RedisURL, fmt.Sprintf("dujiao-bot:v1:{%x}", scope[:16]), defaultLocale, cfg.SessionEncryptionKey)
+		if err != nil {
+			return fmt.Errorf("initialize Redis sessions: %w", err)
+		}
+		logger.Info("Redis sessions enabled")
+	} else {
+		logger.Warn("memory sessions enabled; restart protection requires Redis")
+	}
+	defer sessions.Close()
+	app, err := telegramapp.New(token, api, botConfig.Config, defaultLocale, cfg.PollTimeout, cfg.TelegramAPIURL, logger, sessions)
 	if err != nil {
 		return err
 	}
@@ -123,6 +137,11 @@ func httpServer(address, channelKey, channelSecret string, notifier callback.Not
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if health, ok := notifier.(interface{ SessionHealth() error }); ok && health.SessionHealth() != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("{\"status\":\"session_unavailable\"}\n"))
+			return
+		}
 		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
 	})
 	callback.New(channelKey, channelSecret, notifier, logger).Register(mux)

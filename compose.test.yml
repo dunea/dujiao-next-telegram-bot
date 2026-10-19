@@ -1,6 +1,19 @@
 name: dujiao-bot-integration
 
 services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - test-redis-sessions:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   mock-api:
     build:
       context: .
@@ -22,9 +35,14 @@ services:
       BOT_HTTP_LISTEN: :8444
       BOT_POLL_TIMEOUT: 2s
       BOT_LOG_LEVEL: info
+      BOT_REDIS_URL: redis://redis:6379/0
+      # TEST ONLY: this public key must not be used for real receiving details.
+      BOT_SESSION_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     ports:
       - "18444:8444"
     depends_on:
+      redis:
+        condition: service_healthy
       mock-api:
         condition: service_healthy
     healthcheck:
@@ -32,3 +50,6 @@ services:
       interval: 2s
       timeout: 1s
       retries: 15
+
+volumes:
+  test-redis-sessions:

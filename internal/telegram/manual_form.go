@@ -35,7 +35,10 @@ func (a *App) startManualForm(ctx context.Context, chatID int64, messageID int, 
 		a.apiFailure(ctx, chatID, locale, "create form session", err)
 		return
 	}
-	a.sessions.Update(user.ID, func(state *session.State) { state.Flow = "manual_form"; state.Purchase = draft })
+	result := a.sessions.Update(user.ID, func(state *session.State) { state.Flow = "manual_form"; state.Purchase = draft })
+	if !a.sessionOK(ctx, chatID, result.Err) {
+		return
+	}
 	a.edit(ctx, chatID, messageID, tr(locale, "请按提示逐项填写购买资料。可发送 /back 返回上一项，/cancel 取消。", "請依提示逐項填寫購買資料。可傳送 /back 返回上一項，/cancel 取消。", "Fill in each purchase detail below. Use /back for the previous field or /cancel to cancel."), nil)
 	a.promptForm(ctx, user, 0)
 }
@@ -125,11 +128,12 @@ func (a *App) promptForm(ctx context.Context, user *models.User, editID int) {
 		a.logger.Error("send form prompt", "error", err)
 		return
 	}
-	a.sessions.Update(user.ID, func(state *session.State) {
+	stored := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && !current.Submitting {
 			current.PromptID = message.ID
 		}
 	})
+	a.sessionOK(ctx, draft.ChatID, stored.Err)
 }
 
 func (a *App) handleFormMessage(ctx context.Context, message *models.Message) {
@@ -173,7 +177,7 @@ func (a *App) acceptFormValue(ctx context.Context, user *models.User, draft *ses
 		return
 	}
 	accepted := false
-	a.sessions.Update(user.ID, func(state *session.State) {
+	result := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && !current.Submitting && time.Now().Before(current.ExpiresAt) {
 			if value == nil {
 				delete(current.Values, field.Key)
@@ -186,14 +190,14 @@ func (a *App) acceptFormValue(ctx context.Context, user *models.User, draft *ses
 			accepted = true
 		}
 	})
-	if accepted {
+	if a.sessionOK(ctx, draft.ChatID, result.Err) && accepted {
 		a.promptForm(ctx, user, 0)
 	}
 }
 
 func (a *App) moveFormBack(ctx context.Context, user *models.User, draft *session.PurchaseDraft) {
 	changed := false
-	a.sessions.Update(user.ID, func(state *session.State) {
+	result := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && !current.Submitting {
 			if current.Step > 0 {
 				current.Step--
@@ -203,7 +207,7 @@ func (a *App) moveFormBack(ctx context.Context, user *models.User, draft *sessio
 			changed = true
 		}
 	})
-	if changed {
+	if a.sessionOK(ctx, draft.ChatID, result.Err) && changed {
 		a.promptForm(ctx, user, 0)
 	}
 }
@@ -232,7 +236,7 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 			a.confirmForm(ctx, &query.From, draft)
 			return
 		}
-		a.sessions.Update(query.From.ID, func(state *session.State) {
+		result := a.sessions.Update(query.From.ID, func(state *session.State) {
 			if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == revision && !current.Submitting {
 				current.Step = 0
 				current.Revision++
@@ -242,6 +246,9 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 				state.Flow = "manual_form"
 			}
 		})
+		if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
+			return
+		}
 		a.promptForm(ctx, &query.From, 0)
 		return
 	}
@@ -251,12 +258,15 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 	field := draft.Schema.Fields[draft.Step]
 	switch parts[3] {
 	case "cancel":
-		a.sessions.Update(query.From.ID, func(state *session.State) {
+		result := a.sessions.Update(query.From.ID, func(state *session.State) {
 			if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == revision && !current.Submitting {
 				state.Purchase = nil
 				state.Flow = ""
 			}
 		})
+		if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
+			return
+		}
 		a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "已取消填写资料。", "已取消填寫資料。", "Form cancelled."), a.homeKeyboard(locale))
 	case "back":
 		a.moveFormBack(ctx, &query.From, draft)
@@ -275,7 +285,7 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 			return
 		}
 		if field.Type == "checkbox" {
-			a.sessions.Update(query.From.ID, func(state *session.State) {
+			result := a.sessions.Update(query.From.ID, func(state *session.State) {
 				if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == revision && !current.Submitting {
 					values, _ := current.Values[field.Key].([]string)
 					if selected := slices.Index(values, field.Options[index]); selected >= 0 {
@@ -286,6 +296,9 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 					current.Values[field.Key] = values
 				}
 			})
+			if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
+				return
+			}
 			a.promptForm(ctx, &query.From, message.ID)
 		} else if field.Type == "select" || field.Type == "radio" {
 			a.acceptFormValue(ctx, &query.From, draft, field.Options[index])
@@ -315,7 +328,7 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 	request := draftOrderRequest(user, locale, draft, values)
 	callback := fmt.Sprintf("formconfirm:%s:%d", draft.ID, draft.Revision)
 	preview, previewErr := a.renderOrderPreview(ctx, draft.ChatID, messageID, locale, request, callback, formSummary(locale, draft.Schema, values))
-	a.sessions.Update(user.ID, func(state *session.State) {
+	stored := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && !current.Submitting {
 			current.Ready = previewErr == nil
 			current.PreviewID = messageID
@@ -324,6 +337,9 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 			state.Flow = ""
 		}
 	})
+	if !a.sessionOK(ctx, draft.ChatID, stored.Err) {
+		return
+	}
 	if previewErr != nil {
 		a.showCheckoutError(ctx, draft, messageID, locale, previewErr)
 	}
@@ -331,14 +347,14 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 
 func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session.PurchaseDraft) {
 	claimed := false
-	a.sessions.Update(user.ID, func(state *session.State) {
+	claim := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && current.Ready && !current.Submitting && time.Now().Before(current.ExpiresAt) {
 			current.Submitting = true
 			current.Ready = false
 			claimed = true
 		}
 	})
-	if !claimed {
+	if !a.sessionOK(ctx, draft.ChatID, claim.Err) || !claimed {
 		return
 	}
 	retained := false
@@ -346,12 +362,15 @@ func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session
 		if retained {
 			return
 		}
-		a.sessions.Update(user.ID, func(state *session.State) {
+		stored := a.sessions.Update(user.ID, func(state *session.State) {
 			if current := state.Purchase; current != nil && current.ID == draft.ID {
 				state.Purchase = nil
 				state.Flow = ""
 			}
 		})
+		if stored.Err != nil {
+			a.logger.Warn("checkout cleanup not committed", "user_id", user.ID)
+		}
 	}()
 	locale := a.sessions.Get(user.ID).Locale
 	product, err := a.api.Product(ctx, locale, strconv.FormatInt(user.ID, 10), draft.ProductID)

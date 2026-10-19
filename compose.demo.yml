@@ -1,6 +1,17 @@
 name: dujiao-bot-demo
 
 services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - demo-redis-sessions:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
   demo-store:
     environment:
       DEMO_AFFILIATE_SEED_COMMISSION: "100.00"
@@ -24,9 +35,14 @@ services:
       BOT_HTTP_LISTEN: :8444
       BOT_POLL_TIMEOUT: 30s
       BOT_LOG_LEVEL: info
+      BOT_REDIS_URL: redis://redis:6379/0
+      # DEMO ONLY: never use this public encryption key for a real shop.
+      BOT_SESSION_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     ports:
       - "19444:8444"
     depends_on:
+      redis:
+        condition: service_healthy
       demo-store:
         condition: service_healthy
     healthcheck:
@@ -34,3 +50,6 @@ services:
       interval: 2s
       timeout: 1s
       retries: 15
+
+volumes:
+  demo-redis-sessions:

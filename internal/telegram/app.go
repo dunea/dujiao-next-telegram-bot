@@ -29,7 +29,7 @@ const pageSize = 8
 type App struct {
 	bot      *tgbot.Bot
 	api      *dujiao.Client
-	sessions *session.Memory
+	sessions session.Store
 	logger   *slog.Logger
 	runCtx   context.Context
 
@@ -45,7 +45,7 @@ type activePaymentPoll struct {
 	qrMessageID int
 }
 
-func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocale string, pollTimeout time.Duration, serverURL string, logger *slog.Logger) (*App, error) {
+func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocale string, pollTimeout time.Duration, serverURL string, logger *slog.Logger, stores ...session.Store) (*App, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("Telegram bot token is empty")
 	}
@@ -56,6 +56,9 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		config:   config,
 		runCtx:   context.Background(),
 		polls:    make(map[uint]*activePaymentPoll),
+	}
+	if len(stores) > 0 && stores[0] != nil {
+		app.sessions = stores[0]
 	}
 	options := []tgbot.Option{
 		tgbot.WithWorkers(4),
@@ -102,7 +105,11 @@ func (a *App) UpdateConfig(config dujiao.BotConfig) {
 }
 
 func (a *App) Notify(ctx context.Context, userID int64, eventType string, event callback.Event) error {
-	locale := a.sessions.Get(userID).Locale
+	state := a.sessions.Get(userID)
+	if state.Err != nil {
+		return state.Err
+	}
+	locale := state.Locale
 	var text string
 	switch eventType {
 	case "order-paid":
@@ -132,6 +139,9 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	message := update.Message
 	command, argument := parseCommand(message.Text)
 	state := a.sessions.Get(message.From.ID)
+	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
+		return
+	}
 	navigating := false
 	switch command {
 	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/affiliate", "/language", "/help", "/cancel":
@@ -154,7 +164,9 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		return
 	}
 	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Withdrawal != nil) {
-		a.sessions.ResetFlow(message.From.ID)
+		if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(message.From.ID)) {
+			return
+		}
 	}
 	if state.Flow == "invite" && !strings.HasPrefix(message.Text, "/") {
 		a.finishInvite(ctx, message, strings.TrimSpace(message.Text))
@@ -185,7 +197,9 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	case "/help":
 		a.showHelp(ctx, message.Chat.ID, state.Locale)
 	case "/cancel":
-		a.sessions.ResetFlow(message.From.ID)
+		if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(message.From.ID)) {
+			return
+		}
 		if state.WithdrawalGuard != nil {
 			a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前填写；已发出的提现申请无法通过 /cancel 撤回，请核对提现记录。", "已取消目前填寫；已送出的提領申請無法透過 /cancel 撤回，請核對提領紀錄。", "Current input cancelled. An already submitted withdrawal cannot be recalled with /cancel; check withdrawal history."), nil)
 			return
@@ -235,13 +249,18 @@ func (a *App) finishInvite(ctx context.Context, message *models.Message, code st
 		a.handleIdentityError(ctx, message.Chat.ID, message.From.ID, locale, err)
 		return
 	}
-	a.sessions.ResetFlow(message.From.ID)
+	if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(message.From.ID)) {
+		return
+	}
 	a.welcome(ctx, message.Chat.ID, message.From.ID, locale)
 }
 
 func (a *App) handleIdentityError(ctx context.Context, chatID, userID int64, locale string, err error) {
 	if isAPIError(err, "invite_code_required") || isAPIError(err, "invite_code_invalid") {
-		a.sessions.Update(userID, func(state *session.State) { state.Flow = "invite" })
+		result := a.sessions.Update(userID, func(state *session.State) { state.Flow = "invite" })
+		if !a.sessionOK(ctx, chatID, result.Err) {
+			return
+		}
 		message := tr(locale, "请输入有效的邀请码，或发送 /cancel 取消。", "請輸入有效的邀請碼，或傳送 /cancel 取消。", "Please enter a valid invite code, or send /cancel.")
 		a.send(ctx, chatID, message, nil)
 		return
@@ -251,7 +270,10 @@ func (a *App) handleIdentityError(ctx context.Context, chatID, userID int64, loc
 }
 
 func (a *App) welcome(ctx context.Context, chatID, userID int64, locale string) {
-	a.sessions.Update(userID, func(state *session.State) { state.Locale = locale; state.Flow = "" })
+	result := a.sessions.Update(userID, func(state *session.State) { state.Locale = locale; state.Flow = "" })
+	if !a.sessionOK(ctx, chatID, result.Err) {
+		return
+	}
 	config := a.botConfig()
 	message := localized(config.Welcome.Message, locale)
 	if message == "" {
@@ -272,7 +294,11 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	if message == nil {
 		return
 	}
-	locale := a.sessions.Get(query.From.ID).Locale
+	state := a.sessions.Get(query.From.ID)
+	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
+		return
+	}
+	locale := state.Locale
 	parts := strings.Split(query.Data, ":")
 	if parts[0] == "wd" || parts[0] == "wdack" {
 		a.handleWithdrawalCallback(ctx, query, parts)
@@ -291,7 +317,9 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		return
 	}
 	if parts[0] != "none" && parts[0] != "noop" {
-		a.sessions.ResetFlow(query.From.ID)
+		if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(query.From.ID)) {
+			return
+		}
 	}
 	switch parts[0] {
 	case "home":
@@ -397,7 +425,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	case "setlang":
 		if len(parts) == 2 && validLocale(parts[1]) {
 			locale = parts[1]
-			a.sessions.Update(query.From.ID, func(state *session.State) { state.Locale = locale })
+			result := a.sessions.Update(query.From.ID, func(state *session.State) { state.Locale = locale })
+			if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
+				return
+			}
 			a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "语言已切换。", "語言已切換。", "Language updated."), a.homeKeyboard(locale))
 		}
 	case "help":
@@ -651,7 +682,10 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 		return
 	}
 	draft.PreviewID = messageID
-	a.sessions.Update(user.ID, func(state *session.State) { state.Flow = ""; state.Purchase = draft })
+	result := a.sessions.Update(user.ID, func(state *session.State) { state.Flow = ""; state.Purchase = draft })
+	if !a.sessionOK(ctx, chatID, result.Err) {
+		return
+	}
 	a.previewForm(ctx, user, draft)
 }
 

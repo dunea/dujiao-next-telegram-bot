@@ -93,7 +93,7 @@ func (a *App) handleCouponCallback(ctx context.Context, query *models.CallbackQu
 			changed = true
 		}
 	})
-	if !changed {
+	if !a.sessionOK(ctx, message.Chat.ID, state.Err) || !changed {
 		return
 	}
 	if parts[3] == "edit" {
@@ -111,11 +111,12 @@ func (a *App) promptCoupon(ctx context.Context, user *models.User, draft *sessio
 		a.logger.Error("send coupon prompt", "error", err)
 		return
 	}
-	a.sessions.Update(user.ID, func(state *session.State) {
+	stored := a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && state.Flow == "coupon_code" && !current.Submitting {
 			current.PromptID = message.ID
 		}
 	})
+	a.sessionOK(ctx, draft.ChatID, stored.Err)
 }
 
 func (a *App) handleCouponMessage(ctx context.Context, message *models.Message) {
@@ -150,7 +151,7 @@ func (a *App) handleCouponMessage(ctx context.Context, message *models.Message) 
 			changed = true
 		}
 	})
-	if changed {
+	if a.sessionOK(ctx, message.Chat.ID, state.Err) && changed {
 		a.previewForm(ctx, message.From, state.Purchase)
 	}
 }
@@ -182,7 +183,7 @@ func (a *App) restoreCheckout(ctx context.Context, user *models.User, draft *ses
 			changed = true
 		}
 	})
-	if changed {
+	if a.sessionOK(ctx, draft.ChatID, state.Err) && changed {
 		a.previewForm(ctx, user, state.Purchase)
 	}
 }

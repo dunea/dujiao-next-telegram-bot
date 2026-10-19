@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -9,28 +10,32 @@ import (
 )
 
 type Config struct {
-	DujiaoBaseURL       string
-	DujiaoChannelKey    string
-	DujiaoChannelSecret string
-	TelegramBotToken    string
-	TelegramAPIURL      string
-	DefaultLocale       string
-	PollTimeout         time.Duration
-	HTTPListen          string
-	ShutdownTimeout     time.Duration
-	LogLevel            string
+	DujiaoBaseURL        string
+	DujiaoChannelKey     string
+	DujiaoChannelSecret  string
+	TelegramBotToken     string
+	TelegramAPIURL       string
+	DefaultLocale        string
+	PollTimeout          time.Duration
+	HTTPListen           string
+	ShutdownTimeout      time.Duration
+	LogLevel             string
+	RedisURL             string
+	SessionEncryptionKey string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		DujiaoBaseURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("DUJIAO_BASE_URL")), "/"),
-		DujiaoChannelKey:    strings.TrimSpace(os.Getenv("DUJIAO_CHANNEL_KEY")),
-		DujiaoChannelSecret: strings.TrimSpace(os.Getenv("DUJIAO_CHANNEL_SECRET")),
-		TelegramBotToken:    strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		TelegramAPIURL:      strings.TrimRight(strings.TrimSpace(os.Getenv("TELEGRAM_API_URL")), "/"),
-		DefaultLocale:       envOr("BOT_DEFAULT_LOCALE", "zh-CN"),
-		HTTPListen:          envOr("BOT_HTTP_LISTEN", ":8444"),
-		LogLevel:            strings.ToLower(envOr("BOT_LOG_LEVEL", "info")),
+		DujiaoBaseURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("DUJIAO_BASE_URL")), "/"),
+		DujiaoChannelKey:     strings.TrimSpace(os.Getenv("DUJIAO_CHANNEL_KEY")),
+		DujiaoChannelSecret:  strings.TrimSpace(os.Getenv("DUJIAO_CHANNEL_SECRET")),
+		TelegramBotToken:     strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
+		TelegramAPIURL:       strings.TrimRight(strings.TrimSpace(os.Getenv("TELEGRAM_API_URL")), "/"),
+		DefaultLocale:        envOr("BOT_DEFAULT_LOCALE", "zh-CN"),
+		HTTPListen:           envOr("BOT_HTTP_LISTEN", ":8444"),
+		LogLevel:             strings.ToLower(envOr("BOT_LOG_LEVEL", "info")),
+		RedisURL:             strings.TrimSpace(os.Getenv("BOT_REDIS_URL")),
+		SessionEncryptionKey: strings.TrimSpace(os.Getenv("BOT_SESSION_ENCRYPTION_KEY")),
 	}
 
 	var err error
@@ -47,6 +52,12 @@ func Load() (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.RedisURL != "" {
+		key, err := hex.DecodeString(c.SessionEncryptionKey)
+		if err != nil || len(key) != 32 {
+			return errors.New("BOT_SESSION_ENCRYPTION_KEY must be 64 hexadecimal characters when Redis is enabled")
+		}
+	}
 	var missing []string
 	if c.DujiaoBaseURL == "" {
 		missing = append(missing, "DUJIAO_BASE_URL")

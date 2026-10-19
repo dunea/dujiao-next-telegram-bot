@@ -11,6 +11,8 @@ import (
 // State contains the small amount of ephemeral UI state needed by the bot.
 // Account, order and wallet data remain authoritative in Dujiao-Next.
 type State struct {
+	// Err is local storage status, never persisted. Failed writes must not authorize side effects.
+	Err             error `json:"-"`
 	Locale          string
 	Flow            string
 	Purchase        *PurchaseDraft
@@ -42,6 +44,7 @@ type WithdrawalGuard struct {
 	ID              string
 	Status          string
 	ReviewMessageID int
+	LeaseUntil      time.Time
 }
 
 // RechargeDraft binds amount/channel selection to one private-chat message.
@@ -148,35 +151,56 @@ func NewMemory(defaultLocale string) *Memory {
 	return &Memory{defaultLocale: defaultLocale, users: make(map[int64]State)}
 }
 
-func (m *Memory) Get(userID int64) State {
-	m.mu.Lock()
-	state, ok := m.users[userID]
-	if state.Withdrawal != nil && !time.Now().Before(state.Withdrawal.ExpiresAt) {
+type Store interface {
+	// Get/Update failures return State.Err, never an empty usable session.
+	// In particular, callers must check Err even if an Update callback ran.
+	Get(int64) State
+	Update(int64, func(*State)) State
+	ResetFlow(int64) error
+	Health() error
+	Close() error
+}
+
+func normalizeState(state State, now time.Time) State {
+	if guard := state.WithdrawalGuard; guard != nil && (guard.Status == "checking" || guard.Status == "posting") && !guard.LeaseUntil.IsZero() && !now.Before(guard.LeaseUntil) {
+		guard.Status, guard.ReviewMessageID = "unknown", 0
 		state.Withdrawal = nil
 		if state.Flow == "withdrawal" {
 			state.Flow = ""
 		}
-		m.users[userID] = state
 	}
-	if state.Recharge != nil && !time.Now().Before(state.Recharge.ExpiresAt) {
+	if state.Withdrawal != nil && !now.Before(state.Withdrawal.ExpiresAt) {
+		state.Withdrawal = nil
+		if state.Flow == "withdrawal" {
+			state.Flow = ""
+		}
+	}
+	if state.Recharge != nil && !now.Before(state.Recharge.ExpiresAt) {
 		state.Recharge = nil
 		if state.Flow == "recharge_amount" || state.Flow == "recharge_channels" {
 			state.Flow = ""
 		}
-		m.users[userID] = state
 	}
-	if state.GiftCard != nil && !time.Now().Before(state.GiftCard.ExpiresAt) {
+	if state.GiftCard != nil && !now.Before(state.GiftCard.ExpiresAt) {
 		state.GiftCard = nil
 		if state.Flow == "gift_card" {
 			state.Flow = ""
 		}
-		m.users[userID] = state
 	}
-	if state.Purchase != nil && !time.Now().Before(state.Purchase.ExpiresAt) {
+	if state.Purchase != nil && !now.Before(state.Purchase.ExpiresAt) {
 		state.Purchase = nil
 		if state.Flow == "manual_form" || state.Flow == "coupon_code" {
 			state.Flow = ""
 		}
+	}
+	return state
+}
+
+func (m *Memory) Get(userID int64) State {
+	m.mu.Lock()
+	state, ok := m.users[userID]
+	state = normalizeState(cloneState(state), time.Now())
+	if ok {
 		m.users[userID] = state
 	}
 	state = cloneState(state)
@@ -191,7 +215,7 @@ func (m *Memory) Update(userID int64, update func(*State)) State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	state, ok := m.users[userID]
-	state = cloneState(state)
+	state = normalizeState(cloneState(state), time.Now())
 	if !ok {
 		state.Locale = m.defaultLocale
 	}
@@ -200,12 +224,17 @@ func (m *Memory) Update(userID int64, update func(*State)) State {
 	return cloneState(state)
 }
 
-func (m *Memory) ResetFlow(userID int64) {
-	m.Update(userID, func(state *State) {
-		state.Flow = ""
-		state.Purchase = nil
-		state.GiftCard = nil
-		state.Recharge = nil
-		state.Withdrawal = nil
-	})
+func resetFlow(state *State) {
+	state.Flow = ""
+	state.Purchase = nil
+	state.GiftCard = nil
+	state.Recharge = nil
+	state.Withdrawal = nil
 }
+
+func (m *Memory) ResetFlow(userID int64) error {
+	return m.Update(userID, resetFlow).Err
+}
+
+func (m *Memory) Health() error { return nil }
+func (m *Memory) Close() error  { return nil }

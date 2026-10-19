@@ -16,13 +16,13 @@ integration-up:
 	docker compose -f compose.test.yml up -d --build --wait
 
 integration-down:
-	docker compose -f compose.test.yml down -v
+	docker compose -f compose.test.yml down
 
 demo-up:
 	docker compose -f compose.demo.yml up -d --build --wait
 
 demo-down:
-	docker compose -f compose.demo.yml down -v
+	docker compose -f compose.demo.yml down
 
 loadtest:
 	go run ./cmd/loadtest -mode health -n 2000 -c 50

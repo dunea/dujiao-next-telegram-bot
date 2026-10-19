@@ -44,6 +44,23 @@ jobs:
       - name: Build binary
         run: go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
 
+      - name: Verify real Redis AOF restart recovery
+        env:
+          BOT_TEST_REDIS_URL: redis://127.0.0.1:16379
+        run: |
+          docker run --detach --name session-redis --publish 127.0.0.1:16379:6379 --volume session-redis-data:/data redis:7.4-alpine redis-server --appendonly yes --appendfsync always --maxmemory-policy noeviction
+          for attempt in $(seq 1 30); do
+            if docker exec session-redis redis-cli ping; then break; fi
+            sleep 1
+          done
+          BOT_TEST_REDIS_PHASE=seed go test ./internal/session -run '^TestRedisAOFRestart$' -count=1
+          docker restart session-redis
+          for attempt in $(seq 1 30); do
+            if docker exec session-redis redis-cli ping; then break; fi
+            sleep 1
+          done
+          BOT_TEST_REDIS_PHASE=verify go test ./internal/session -run '^TestRedisAOFRestart$' -count=1
+
   docker:
     name: Docker builds
     runs-on: ubuntu-latest

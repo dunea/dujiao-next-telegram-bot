@@ -26,7 +26,10 @@ func (a *App) askGiftCard(ctx context.Context, chatID, userID int64) {
 		return
 	}
 	input := &session.GiftCardInput{ID: rand.Text(), ChatID: chatID, ExpiresAt: time.Now().Add(10 * time.Minute)}
-	a.sessions.Update(userID, func(state *session.State) { state.Purchase = nil; state.Flow = "gift_card"; state.GiftCard = input })
+	result := a.sessions.Update(userID, func(state *session.State) { state.Purchase = nil; state.Flow = "gift_card"; state.GiftCard = input })
+	if !a.sessionOK(ctx, chatID, result.Err) {
+		return
+	}
 	a.sendGiftCardPrompt(ctx, userID, input)
 }
 
@@ -38,11 +41,12 @@ func (a *App) sendGiftCardPrompt(ctx context.Context, userID int64, input *sessi
 		a.logger.Error("send gift card prompt", "error", err)
 		return
 	}
-	a.sessions.Update(userID, func(state *session.State) {
+	stored := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.GiftCard; current != nil && current.ID == input.ID && !current.Submitting {
 			current.PromptID = message.ID
 		}
 	})
+	a.sessionOK(ctx, input.ChatID, stored.Err)
 }
 
 func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message) {
@@ -54,7 +58,9 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 	}
 	command, _ := parseCommand(message.Text)
 	if command == "/back" {
-		a.sessions.ResetFlow(userID)
+		if !a.sessionOK(ctx, chatID, a.sessions.ResetFlow(userID)) {
+			return
+		}
 		a.showWallet(ctx, chatID, userID, false, 0)
 		return
 	}
@@ -69,13 +75,13 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 		return
 	}
 	claimed := false
-	a.sessions.Update(userID, func(state *session.State) {
+	claim := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.GiftCard; state.Flow == "gift_card" && current != nil && current.ID == input.ID && current.PromptID == input.PromptID && !current.Submitting && time.Now().Before(current.ExpiresAt) {
 			current.Submitting = true
 			claimed = true
 		}
 	})
-	if !claimed {
+	if !a.sessionOK(ctx, chatID, claim.Err) || !claimed {
 		return
 	}
 	result, err := a.api.RedeemGiftCard(ctx, strconv.FormatInt(userID, 10), code)
@@ -106,27 +112,27 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 
 func (a *App) clearGiftCard(userID int64, id string) bool {
 	cleared := false
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		if state.GiftCard != nil && state.GiftCard.ID == id {
 			state.GiftCard = nil
 			state.Flow = ""
 			cleared = true
 		}
 	})
-	return cleared
+	return result.Err == nil && cleared
 }
 
 func (a *App) retryGiftCard(ctx context.Context, userID int64, id string) {
 	input := &session.GiftCardInput{ID: rand.Text(), ChatID: userID, ExpiresAt: time.Now().Add(10 * time.Minute)}
 	changed := false
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.GiftCard; current != nil && current.ID == id {
 			state.GiftCard = input
 			state.Flow = "gift_card"
 			changed = true
 		}
 	})
-	if changed {
+	if a.sessionOK(ctx, userID, result.Err) && changed {
 		a.sendGiftCardPrompt(ctx, userID, input)
 	}
 }

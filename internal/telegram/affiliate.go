@@ -216,14 +216,20 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 	}
 	if kind == "affwithdraws" {
 		state := a.sessions.Get(userID)
+		if !a.sessionOK(ctx, chatID, state.Err) {
+			return
+		}
 		if guard := state.WithdrawalGuard; guard != nil && guard.Status == "unknown" {
 			text += "\n\n" + tr(locale, "⚠️ 上一笔申请结果不明。记录可能尚未更新，请联系商家核对；仅在确认可以重新申请后，才解除本地重试保护。解除保护不会撤回商店中的申请。", "⚠️ 上一筆申請結果不明。紀錄可能尚未更新，請聯絡商家核對；僅在確認可以重新申請後，才解除本機重試保護。解除保護不會撤回商店中的申請。", "⚠️ A previous request has an unknown result. History may be delayed. Contact the store and clear local retry protection only after verifying that you can apply again. This does not cancel a store-side request.")
 			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已核对，解除重试保护", "已核對，解除重試保護", "Reviewed; clear retry protection"), CallbackData: "wdack:" + guard.ID}})
-			a.sessions.Update(userID, func(state *session.State) {
+			result := a.sessions.Update(userID, func(state *session.State) {
 				if current := state.WithdrawalGuard; current != nil && current.ID == guard.ID && current.Status == "unknown" {
 					current.ReviewMessageID = messageID
 				}
 			})
+			if !a.sessionOK(ctx, chatID, result.Err) {
+				return
+			}
 		}
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回推广中心", "‹ 返回推廣中心", "‹ Affiliate center"), CallbackData: "affiliate"}})

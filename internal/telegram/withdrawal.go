@@ -94,6 +94,9 @@ func (a *App) startWithdrawal(ctx context.Context, chatID, userID int64) {
 		return
 	}
 	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, chatID, state.Err) {
+		return
+	}
 	if state.WithdrawalGuard != nil {
 		a.send(ctx, chatID, tr(state.Locale, "上一笔提现仍在核对、提交中或结果不明，暂不能再次申请。请先查看提现记录；结果不明时请联系商家核对。", "上一筆提領仍在核對、提交中或結果不明，暫時無法再次申請。請先查看提領紀錄；結果不明時請聯絡商家核對。", "A previous withdrawal is being checked/submitted or has an unknown result. Check withdrawal history and contact the store before applying again."), withdrawalResultKeyboard(state.Locale))
 		return
@@ -109,14 +112,14 @@ func (a *App) startWithdrawal(ctx context.Context, chatID, userID int64) {
 	}
 	rules.ID, rules.ChatID, rules.Step, rules.ExpiresAt = rand.Text(), chatID, "amount", time.Now().Add(10*time.Minute)
 	started := false
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		if state.WithdrawalGuard == nil {
 			state.Flow, state.Withdrawal = "withdrawal", rules
 			state.Purchase, state.GiftCard, state.Recharge = nil, nil, nil
 			started = true
 		}
 	})
-	if started {
+	if a.sessionOK(ctx, chatID, result.Err) && started {
 		a.promptWithdrawal(ctx, userID, rules)
 	}
 }
@@ -168,11 +171,12 @@ func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session
 		a.clearWithdrawal(userID, draft.ID, false)
 		return
 	}
-	a.sessions.Update(userID, func(state *session.State) {
+	stored := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.Withdrawal; current != nil && current.ID == draft.ID && !current.Busy {
 			current.MessageID = message.ID
 		}
 	})
+	a.sessionOK(ctx, draft.ChatID, stored.Err)
 }
 
 func (a *App) advanceWithdrawal(userID int64, draft *session.WithdrawalDraft, change func(*session.WithdrawalDraft)) *session.WithdrawalDraft {
@@ -184,7 +188,7 @@ func (a *App) advanceWithdrawal(userID int64, draft *session.WithdrawalDraft, ch
 			changed = true
 		}
 	})
-	if !changed {
+	if state.Err != nil || !changed {
 		return nil
 	}
 	return state.Withdrawal
@@ -276,18 +280,21 @@ func (a *App) handleWithdrawalCallback(ctx context.Context, query *models.Callba
 		return
 	}
 	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
+		return
+	}
 	if parts[0] == "wdack" {
 		if len(parts) != 2 {
 			return
 		}
 		cleared := false
-		a.sessions.Update(userID, func(state *session.State) {
+		result := a.sessions.Update(userID, func(state *session.State) {
 			if guard := state.WithdrawalGuard; guard != nil && guard.Status == "unknown" && guard.ID == parts[1] && guard.ReviewMessageID != 0 && guard.ReviewMessageID == message.ID {
 				state.WithdrawalGuard = nil
 				cleared = true
 			}
 		})
-		if cleared {
+		if a.sessionOK(ctx, message.Chat.ID, result.Err) && cleared {
 			a.edit(ctx, message.Chat.ID, message.ID, tr(state.Locale, "已解除本地重试保护。请确认上一笔结果后再发起新的申请；本操作不会撤回或删除商店中的申请。", "已解除本機重試保護。請確認上一筆結果後再發起新申請；本操作不會撤回或刪除商店中的申請。", "Local retry protection cleared. Verify the previous result before starting a new request. This does not cancel or delete a store-side request."), withdrawalResultKeyboard(state.Locale))
 		}
 		return
@@ -338,8 +345,8 @@ func (a *App) handleWithdrawalCallback(ctx context.Context, query *models.Callba
 	}
 }
 
-func (a *App) clearWithdrawal(userID int64, id string, clearGuard bool) {
-	a.sessions.Update(userID, func(state *session.State) {
+func (a *App) clearWithdrawal(userID int64, id string, clearGuard bool) error {
+	stored := a.sessions.Update(userID, func(state *session.State) {
 		if state.Withdrawal != nil && state.Withdrawal.ID == id {
 			state.Withdrawal = nil
 			if state.Flow == "withdrawal" {
@@ -350,11 +357,15 @@ func (a *App) clearWithdrawal(userID int64, id string, clearGuard bool) {
 			state.WithdrawalGuard = nil
 		}
 	})
+	if stored.Err != nil {
+		a.logger.Warn("withdrawal cleanup not committed; retry protection retained", "user_id", userID)
+	}
+	return stored.Err
 }
 
 func (a *App) cancelWithdrawalInput(userID int64, id string) bool {
 	cancelled := false
-	a.sessions.Update(userID, func(state *session.State) {
+	result := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.Withdrawal; current != nil && current.ID == id && !current.Busy && state.WithdrawalGuard == nil {
 			state.Withdrawal = nil
 			if state.Flow == "withdrawal" {
@@ -363,22 +374,26 @@ func (a *App) cancelWithdrawalInput(userID int64, id string) bool {
 			cancelled = true
 		}
 	})
-	return cancelled
+	return result.Err == nil && cancelled
 }
 
 func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session.WithdrawalDraft) {
+	// The lease outlives the entire request deadline. Expiry only enables manual
+	// reconciliation, never resubmission of this draft.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	claimed := false
-	a.sessions.Update(userID, func(state *session.State) {
+	claim := a.sessions.Update(userID, func(state *session.State) {
 		if current := state.Withdrawal; state.Flow == "withdrawal" && current != nil && current.ID == draft.ID && current.MessageID == draft.MessageID && !current.Busy && state.WithdrawalGuard == nil && time.Now().Before(current.ExpiresAt) {
 			current.Busy = true
-			state.WithdrawalGuard = &session.WithdrawalGuard{ID: draft.ID, Status: "checking"}
+			state.WithdrawalGuard = &session.WithdrawalGuard{ID: draft.ID, Status: "checking", LeaseUntil: time.Now().Add(3 * time.Minute)}
 			claimed = true
 		}
 	})
-	if !claimed {
+	if !a.sessionOK(ctx, draft.ChatID, claim.Err) || !claimed {
 		return
 	}
-	locale := a.sessions.Get(userID).Locale
+	locale := claim.Locale
 	rules, err := a.withdrawalRules(ctx, userID)
 	if err != nil {
 		a.clearWithdrawal(userID, draft.ID, true)
@@ -392,13 +407,18 @@ func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session
 		return
 	}
 	posting := false
-	a.sessions.Update(userID, func(state *session.State) {
-		if current := state.Withdrawal; state.Flow == "withdrawal" && current != nil && current.ID == draft.ID && current.Busy && time.Now().Before(current.ExpiresAt) && state.WithdrawalGuard != nil && state.WithdrawalGuard.ID == draft.ID {
+	posted := a.sessions.Update(userID, func(state *session.State) {
+		if current := state.Withdrawal; state.Flow == "withdrawal" && current != nil && current.ID == draft.ID && current.Busy && time.Now().Before(current.ExpiresAt) && state.WithdrawalGuard != nil && state.WithdrawalGuard.ID == draft.ID && state.WithdrawalGuard.Status == "checking" && time.Now().Before(state.WithdrawalGuard.LeaseUntil) {
 			state.Withdrawal, state.Flow = nil, "" // Erase the account from session before the write.
 			state.WithdrawalGuard.Status = "posting"
 			posting = true
 		}
 	})
+	// A lost acknowledgement can mean the posting marker DID persist. Never
+	// erase it here, and never issue the financial write without an acknowledgement.
+	if !a.sessionOK(ctx, draft.ChatID, posted.Err) {
+		return
+	}
 	if !posting {
 		a.clearWithdrawal(userID, draft.ID, true)
 		return
@@ -411,19 +431,25 @@ func (a *App) submitWithdrawal(ctx context.Context, userID int64, draft *session
 		if definitive {
 			a.clearWithdrawal(userID, draft.ID, true)
 		} else {
-			a.sessions.Update(userID, func(state *session.State) {
+			stored := a.sessions.Update(userID, func(state *session.State) {
 				if guard := state.WithdrawalGuard; guard != nil && guard.ID == draft.ID {
 					guard.Status = "unknown"
 					guard.ReviewMessageID = 0
 				}
 			})
+			if stored.Err != nil {
+				a.logger.Warn("unknown withdrawal marker not acknowledged; posting protection retained", "user_id", userID)
+			}
 		}
 		a.edit(ctx, draft.ChatID, draft.MessageID, text, withdrawalResultKeyboard(locale))
 		return
 	}
-	a.clearWithdrawal(userID, draft.ID, true)
+	cleanupErr := a.clearWithdrawal(userID, draft.ID, true)
 	text := "✅ " + tr(locale, "提现申请已记录", "提領申請已記錄", "Withdrawal request recorded") + fmt.Sprintf("\n\n#%d\n", result.ID) + affiliateMoney(result.Amount, draft.Currency) + "\n" + html.EscapeString(result.Channel) + " · <code>" + html.EscapeString(maskAffiliateAccount(draft.Account)) + "</code>\n" + tr(locale, "状态：", "狀態：", "Status: ") + affiliateStatus(locale, result.Status)
 	text += "\n\n" + tr(locale, "提交申请不等于已到账，请在提现记录中查看商店审核及打款结果。", "送出申請不等於已入帳，請在提領紀錄中查看商店審核與匯款結果。", "Submission does not mean funds arrived. Check history for the merchant's review and payment result.")
+	if cleanupErr != nil {
+		text += "\n\n" + tr(locale, "申请已记录，但本地保护清理未获确认。请勿重新提交；稍后查看提现记录核对，必要时联系商家。", "申請已記錄，但本機保護清理未獲確認。請勿重新送出；稍後查看提領紀錄核對，必要時聯絡商家。", "The request was recorded, but clearing retry protection was not acknowledged. Do not resubmit; check history and contact the store if needed.")
+	}
 	a.edit(ctx, draft.ChatID, draft.MessageID, text, withdrawalResultKeyboard(locale))
 }
 

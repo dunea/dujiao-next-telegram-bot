@@ -1,0 +1,24 @@
+# Production overlay: docker compose -f compose.yml -f compose.redis.yml up -d --build
+services:
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-sessions:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  bot:
+    environment:
+      BOT_REDIS_URL: redis://redis:6379/0
+      BOT_SESSION_ENCRYPTION_KEY: ${BOT_SESSION_ENCRYPTION_KEY:?Set a persistent random 64-character hex key in .env}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-sessions:
