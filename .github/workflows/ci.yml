@@ -36,7 +36,7 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Check maintenance script syntax
-        run: sh -n scripts/acceptance.sh scripts/package-release.sh
+        run: sh -n scripts/acceptance.sh scripts/package-release.sh scripts/test-upgrade.sh
 
       - name: Vet
         run: go vet ./...
@@ -66,6 +66,26 @@ jobs:
             sleep 1
           done
           BOT_TEST_REDIS_PHASE=verify go test ./internal/session -run '^TestRedisAOFRestart$' -count=1
+
+      - name: Verify v0.4.0 to current storage upgrade and compatible old read
+        env:
+          BOT_UPGRADE_REDIS_URL: redis://127.0.0.1:16379
+        run: sh scripts/test-upgrade.sh
+
+  upstream:
+    name: Pinned Dujiao-Next source contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Reverify reviewed upstream source fingerprints
+        run: go run ./cmd/compatcheck -verify-upstream
 
   docker:
     name: Docker builds

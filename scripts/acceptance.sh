@@ -19,6 +19,7 @@ wait_healthy() {
 
 integration_compose up -d --build --wait
 integration_compose exec -T bot /usr/local/bin/dujiao-bot --version
+integration_compose exec -T bot /usr/local/bin/dujiao-compatcheck -user-id 42
 
 BOT_TEST_REDIS_URL=redis://127.0.0.1:16379 BOT_TEST_REDIS_PHASE=seed \
   go test ./internal/session -run '^TestRedisAOFRestart$' -count=1 -v
@@ -26,6 +27,7 @@ integration_compose restart redis
 wait_healthy
 BOT_TEST_REDIS_URL=redis://127.0.0.1:16379 BOT_TEST_REDIS_PHASE=verify \
   go test ./internal/session -run '^TestRedisAOFRestart$' -count=1 -v
+BOT_UPGRADE_REDIS_URL=redis://127.0.0.1:16379 sh scripts/test-upgrade.sh
 
 # Always restore this TEST Redis if a failure happens during the outage probe.
 trap 'integration_compose start redis >/dev/null 2>&1 || true' EXIT

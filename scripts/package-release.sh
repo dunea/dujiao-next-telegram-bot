@@ -51,11 +51,15 @@ for release_target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
   mkdir "$bundle_dir"
   CGO_ENABLED=0 GOOS="$release_os" GOARCH="$release_arch" go build \
     -trimpath -ldflags='-s -w' -o "$bundle_dir/dujiao-next-telegram-bot" ./cmd/bot
+  CGO_ENABLED=0 GOOS="$release_os" GOARCH="$release_arch" go build \
+    -trimpath -ldflags='-s -w' -o "$bundle_dir/dujiao-compatcheck" ./cmd/compatcheck
   (cd "$bundle_dir" && go version -m ./dujiao-next-telegram-bot > build-info.txt)
+  (cd "$bundle_dir" && go version -m ./dujiao-compatcheck > compatcheck-build-info.txt)
   cp .env.example LICENSE THIRD_PARTY_NOTICES.md README.md CHANGELOG.md ROADMAP.md RELEASE.md "$bundle_dir/"
   cp -R "$notice_dir" "$bundle_dir/third-party"
   mkdir "$bundle_dir/docs"
   cp docs/acceptance-v0.4.0.md "$bundle_dir/docs/"
+  cp docs/compatibility.md "$bundle_dir/docs/"
   COPYFILE_DISABLE=1 tar -czf "$release_dir/$bundle_name.tar.gz" -C "$release_dir" "$bundle_name"
 done
 

@@ -19,7 +19,7 @@ func TestVersionCommandDoesNotRequireCredentials(t *testing.T) {
 	t.Setenv("DUJIAO_CHANNEL_SECRET", "")
 	for _, flag := range []string{"--version", "-version"} {
 		var output bytes.Buffer
-		if err := command([]string{flag}, &output); err != nil || output.String() != "0.4.0\n" {
+		if err := command([]string{flag}, &output); err != nil || output.String() != version+"\n" {
 			t.Fatal("version check loaded configuration or returned wrong version", err, output.String())
 		}
 	}

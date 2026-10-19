@@ -1,7 +1,8 @@
-.PHONY: build test lint verify acceptance release run integration-up integration-down demo-up demo-down loadtest
+.PHONY: build test lint verify acceptance compatibility upstream-audit upgrade-test release run integration-up integration-down demo-up demo-down loadtest
 
 build:
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
+	go build -trimpath -o dist/dujiao-compatcheck ./cmd/compatcheck
 
 test:
 	go test ./...
@@ -15,9 +16,19 @@ verify:
 	go vet ./...
 	go test -race -count=3 ./...
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
+	go build -trimpath -o dist/dujiao-compatcheck ./cmd/compatcheck
 
 acceptance:
 	sh scripts/acceptance.sh
+
+compatibility:
+	go test -race ./internal/compatibility ./internal/dujiao ./cmd/compatcheck
+
+upstream-audit:
+	go run ./cmd/compatcheck -verify-upstream
+
+upgrade-test:
+	sh scripts/test-upgrade.sh
 
 release:
 	sh scripts/package-release.sh

@@ -42,6 +42,8 @@
 
 当前版本：[`v0.4.0`](https://github.com/dunea/dujiao-next-telegram-bot/releases/tag/v0.4.0)。变更记录见 [CHANGELOG.md](CHANGELOG.md)，下载校验、新部署、升级/回滚和故障处理见 [RELEASE.md](RELEASE.md)，测试范围见 [整体验收记录](docs/acceptance-v0.4.0.md)。
 
+`main` 正在开发 `1.0.0-dev`。第一批加入 [Dujiao-Next 兼容性矩阵与升级测试](docs/compatibility.md)：固定三个上游提交的源码证据、合成协议契约、只读预检和真实 v0.4.0 → 当前版本的 Redis 存储升级测试；不代表 v1.0 已正式发布，也不代表真实商店数据库迁移已验证。
+
 ## 环境要求
 
 - Dujiao-Next `v1.5.0` 或兼容 Channel API 的版本
@@ -49,6 +51,8 @@
 - 一个通过 [@BotFather](https://t.me/BotFather) 创建的 Telegram Bot
 
 项目使用仍在维护的 [`github.com/go-telegram/bot`](https://github.com/go-telegram/bot)，没有使用多年未发布新版本的旧 `go-telegram-bot-api/v5`。
+
+当前推荐 `v1.5.0` 作为源码契约基线；`v1.4.8 / v1.4.9` 的渠道邀请码注册有限制。具体证据级别、版本边界与升级前后只读诊断见 [兼容性矩阵](docs/compatibility.md)，不要将 Mock 或源码复核当作真实商店验收。
 
 ## 配置
 

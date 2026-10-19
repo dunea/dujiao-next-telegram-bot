@@ -22,7 +22,7 @@ import (
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
 
-const version = "0.4.0"
+const version = "1.0.0-dev"
 
 func main() {
 	if err := command(os.Args[1:], os.Stdout); err != nil {

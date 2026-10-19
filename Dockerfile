@@ -5,6 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dujiao-bot ./cmd/bot
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/dujiao-compatcheck ./cmd/compatcheck
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \
@@ -14,5 +15,6 @@ RUN apk add --no-cache ca-certificates tzdata \
     && chown bot:bot /var/lib/dujiao-bot
 USER bot
 COPY --from=build /out/dujiao-bot /usr/local/bin/dujiao-bot
+COPY --from=build /out/dujiao-compatcheck /usr/local/bin/dujiao-compatcheck
 EXPOSE 8444
 ENTRYPOINT ["/usr/local/bin/dujiao-bot"]
