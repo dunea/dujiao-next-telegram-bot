@@ -17,20 +17,23 @@ type State struct {
 }
 
 type PurchaseDraft struct {
-	ID         string
-	ChatID     int64
-	ProductID  uint
-	SKUID      uint
-	Quantity   int
-	Schema     dujiao.ManualFormSchema
-	Values     map[string]any
-	Step       int
-	Revision   int
-	PromptID   int
-	PreviewID  int
-	Ready      bool
-	Submitting bool
-	ExpiresAt  time.Time
+	ID              string
+	ChatID          int64
+	ProductID       uint
+	SKUID           uint
+	Quantity        int
+	CouponCode      string
+	PreviewTotal    string
+	PreviewCurrency string
+	Schema          dujiao.ManualFormSchema
+	Values          map[string]any
+	Step            int
+	Revision        int
+	PromptID        int
+	PreviewID       int
+	Ready           bool
+	Submitting      bool
+	ExpiresAt       time.Time
 }
 
 func cloneState(state State) State {
@@ -38,7 +41,7 @@ func cloneState(state State) State {
 		return state
 	}
 	draft := *state.Purchase
-	draft.Schema.Fields = append([]dujiao.ManualFormField(nil), draft.Schema.Fields...)
+	draft.Schema.Fields = slices.Clone(draft.Schema.Fields)
 	for i := range draft.Schema.Fields {
 		field := &draft.Schema.Fields[i]
 		field.Options = slices.Clone(field.Options)
@@ -81,7 +84,7 @@ func (m *Memory) Get(userID int64) State {
 	state, ok := m.users[userID]
 	if state.Purchase != nil && !time.Now().Before(state.Purchase.ExpiresAt) {
 		state.Purchase = nil
-		if state.Flow == "manual_form" {
+		if state.Flow == "manual_form" || state.Flow == "coupon_code" {
 			state.Flow = ""
 		}
 		m.users[userID] = state

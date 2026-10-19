@@ -152,12 +152,22 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 	case "/catalog/products":
 		data = demoProductList(request)
 	case "/orders/preview":
-		data = demoOrderPreview(request)
+		preview := demoOrderPreview(request)
+		if preview["error_code"] == "coupon_invalid" {
+			writeDemoCouponError(w)
+			return
+		}
+		data = preview
 	case "/orders":
 		if request.Method == http.MethodGet {
 			data = demoOrderList(request)
 		} else {
-			created := demoCreateOrder(request)
+			preview := demoOrderPreview(request)
+			if preview["error_code"] == "coupon_invalid" {
+				writeDemoCouponError(w)
+				return
+			}
+			created := demoCreatePreviewedOrder(preview)
 			if created == nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
@@ -317,16 +327,35 @@ func demoBuildPreview(payload demoOrderInput) map[string]any {
 			"manual_form_submission": submission,
 		})
 	}
+	discount := 0
+	code := strings.TrimSpace(payload.CouponCode)
+	if code != "" {
+		switch code {
+		case "SAVE10":
+			discount = (total + 5) / 10
+		case "LESS5":
+			if total < 2000 {
+				return demoInvalidCouponPreview()
+			}
+			discount = 500
+		default:
+			return demoInvalidCouponPreview()
+		}
+	}
 	return map[string]any{
 		"item_count": len(previewItems), "items": previewItems, "original_amount": money(total),
-		"coupon_discount": "0.00", "promotion_discount": "0.00", "wholesale_discount": "0.00",
-		"total_amount": money(total), "currency": "CNY", "valid": len(validationErrors) == 0,
+		"coupon_code": code, "coupon_discount": money(discount), "promotion_discount": "0.00", "wholesale_discount": "0.00",
+		"total_amount": money(total - discount), "currency": "CNY", "valid": len(validationErrors) == 0,
 		"validation_errors": validationErrors,
 	}
 }
 
 func demoCreateOrder(request *http.Request) map[string]any {
 	preview := demoOrderPreview(request)
+	return demoCreatePreviewedOrder(preview)
+}
+
+func demoCreatePreviewedOrder(preview map[string]any) map[string]any {
 	if preview["valid"] != true {
 		return nil
 	}
@@ -345,15 +374,26 @@ func demoCreateOrder(request *http.Request) map[string]any {
 	order := map[string]any{
 		"order_id": orderID, "order_no": orderNo, "status": "pending_payment", "currency": "CNY",
 		"total_amount": preview["total_amount"], "paid_amount": "0.00", "wallet_paid_amount": "0.00",
+		"original_amount": preview["original_amount"], "coupon_discount": preview["coupon_discount"], "coupon_code": preview["coupon_code"],
 		"online_paid_amount": "0.00", "product_title": title, "item_count": len(items), "created_at": createdAt,
 		"fulfillment_type": fulfillmentType, "fulfillment_status": "", "fulfillment_result": nil,
 		"fulfillment_instructions": "", "children": []any{}, "items": items,
 	}
 	orderMu.Lock()
 	demoOrders = append([]map[string]any{order}, demoOrders...)
-	orderMu.Unlock()
 	result := cloneMap(order)
+	orderMu.Unlock()
 	return result
+}
+
+func demoInvalidCouponPreview() map[string]any {
+	return map[string]any{"valid": false, "items": []map[string]any{}, "validation_errors": []string{"优惠码无效或不满足使用条件"}, "error_code": "coupon_invalid"}
+}
+
+func writeDemoCouponError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 400, "error_code": "coupon_invalid", "msg": "优惠码无效、已过期或未满足门槛"})
 }
 
 func demoOrderList(request *http.Request) map[string]any {
@@ -575,6 +615,7 @@ type orderItem struct {
 type demoOrderInput struct {
 	Items          []orderItem               `json:"items"`
 	ManualFormData map[string]map[string]any `json:"manual_form_data"`
+	CouponCode     string                    `json:"coupon_code"`
 }
 
 func demoFulfillmentType(product demoProduct) string {

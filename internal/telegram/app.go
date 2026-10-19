@@ -141,6 +141,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleFormMessage(ctx, message)
 		return
 	}
+	if state.Flow == "coupon_code" && !navigating {
+		a.handleCouponMessage(ctx, message)
+		return
+	}
 	if navigating && state.Purchase != nil {
 		a.sessions.ResetFlow(message.From.ID)
 	}
@@ -248,6 +252,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := a.sessions.Get(query.From.ID).Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "coupon" {
+		a.handleCouponCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "form" || parts[0] == "formconfirm" || parts[0] == "formedit" {
 		a.handleFormCallback(ctx, query, parts)
 		return
@@ -597,27 +605,24 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 		a.startManualForm(ctx, chatID, messageID, user, product, skuID, quantity)
 		return
 	}
-	request := dujiao.OrderRequest{
-		TelegramIdentity: identityFromUser(user, locale),
-		Items:            []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
+	draft, err := newPurchaseDraft(chatID, product, skuID, quantity)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "create checkout", err)
+		return
 	}
-	a.renderOrderPreview(ctx, chatID, messageID, locale, request, fmt.Sprintf("confirm:%d:%d:%d", productID, skuID, quantity), "")
+	draft.PreviewID = messageID
+	a.sessions.Update(user.ID, func(state *session.State) { state.Flow = ""; state.Purchase = draft })
+	a.previewForm(ctx, user, draft)
 }
 
-func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID int, locale string, request dujiao.OrderRequest, confirmCallback, formSummary string) bool {
+func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID int, locale string, request dujiao.OrderRequest, confirmCallback, formSummary string) (dujiao.OrderPreview, error) {
 	productID := request.Items[0].ProductID
 	preview, err := a.api.PreviewOrder(ctx, request)
 	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "preview order", err)
-		return false
+		return preview, err
 	}
 	if !preview.Valid {
-		message := tr(locale, "当前商品数量或库存不再可用，请返回商品重试。", "目前商品數量或庫存已不可用，請返回商品重試。", "The selected quantity or stock is no longer available. Return to the product and try again.")
-		if len(preview.ValidationErrors) > 0 {
-			message += "\n\n" + html.EscapeString(strings.Join(preview.ValidationErrors, "\n"))
-		}
-		a.edit(ctx, chatID, messageID, message, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
-		return false
+		return preview, errors.New("order preview validation failed")
 	}
 	title := tr(locale, "确认订单", "確認訂單", "Confirm order")
 	text := "<b>" + title + "</b>"
@@ -628,58 +633,71 @@ func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID in
 		}
 		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(preview.Currency))
 	}
-	text += "\n\n<b>" + tr(locale, "合计：", "合計：", "Total: ") + html.EscapeString(preview.TotalAmount+" "+preview.Currency) + "</b>"
+	if preview.OriginalAmount != "" {
+		text += "\n\n" + tr(locale, "原价：", "原價：", "Original amount: ") + html.EscapeString(preview.OriginalAmount+" "+preview.Currency)
+	}
+	for _, discount := range []struct{ label, amount string }{
+		{tr(locale, "优惠券优惠：", "優惠券折扣：", "Coupon discount: "), preview.CouponDiscount},
+		{tr(locale, "活动优惠：", "活動折扣：", "Promotion discount: "), preview.PromotionDiscount},
+		{tr(locale, "批量优惠：", "批量折扣：", "Wholesale discount: "), preview.WholesaleDiscount},
+	} {
+		if amount, err := strconv.ParseFloat(discount.amount, 64); err == nil && amount > 0 {
+			text += "\n" + discount.label + "−" + html.EscapeString(discount.amount+" "+preview.Currency)
+		}
+	}
+	if request.CouponCode != "" {
+		text += "\n" + tr(locale, "优惠码：", "優惠碼：", "Coupon: ") + "<code>" + html.EscapeString(request.CouponCode) + "</code>"
+	}
+	text += "\n<b>" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(preview.TotalAmount+" "+preview.Currency) + "</b>"
 	text += formSummary
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "确认下单", "確認下單", "Place order"), CallbackData: confirmCallback}},
 		{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}},
 	}}
-	if strings.HasPrefix(confirmCallback, "formconfirm:") {
+	if formSummary != "" {
 		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard[:1],
 			[]models.InlineKeyboardButton{{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: strings.Replace(confirmCallback, "formconfirm:", "formedit:", 1)}},
 			keyboard.InlineKeyboard[1],
 		)
 	}
+	parts := strings.Split(confirmCallback, ":")
+	if len(parts) == 3 {
+		rows := couponButtons(locale, parts[1], parts[2], request.CouponCode)
+		keyboard.InlineKeyboard = append(rows, keyboard.InlineKeyboard...)
+	}
 	a.edit(ctx, chatID, messageID, text, keyboard)
-	return true
+	return preview, nil
 }
 
 func (a *App) createOrder(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int) {
-	locale := a.sessions.Get(user.ID).Locale
-	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
-		return
-	}
-	product, err := a.api.Product(ctx, locale, strconv.FormatInt(user.ID, 10), productID)
-	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "get order form", err)
-		return
-	}
-	if len(product.ManualFormSchema.Fields) > 0 {
-		a.startManualForm(ctx, chatID, messageID, user, product, skuID, quantity)
-		return
-	}
-	a.createOrderWithData(ctx, chatID, messageID, user, productID, skuID, quantity, nil)
+	// Legacy confirmation buttons open a fresh preview instead of bypassing the
+	// current draft's coupon and one-time confirmation.
+	a.previewOrder(ctx, chatID, messageID, user, productID, skuID, quantity)
 }
 
-func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int, formData map[string]any) {
+func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int, formData map[string]any, couponCode string) error {
 	locale := a.sessions.Get(user.ID).Locale
 	a.edit(ctx, chatID, messageID, tr(locale, "正在创建订单…", "正在建立訂單…", "Creating order…"), nil)
 	request := dujiao.OrderRequest{
 		TelegramIdentity: identityFromUser(user, locale),
 		Items:            []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
 		ManualFormData:   formData,
+		CouponCode:       couponCode,
 	}
 	order, err := a.api.CreateOrder(ctx, request)
 	if err != nil {
+		if isAPIError(err, "coupon_invalid") {
+			return err
+		}
 		a.logger.Error("create Dujiao order", "user_id", user.ID, "error", err)
 		a.edit(ctx, chatID, messageID, tr(locale, "订单创建失败，请返回商品后重试。", "訂單建立失敗，請返回商品後再試。", "Could not create the order. Return to the product and try again."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
-		return
+		return err
 	}
 	channels, err := a.api.PaymentChannels(ctx, strconv.FormatInt(user.ID, 10), order.OrderNo)
 	if err != nil {
 		a.logger.Error("list payment channels", "order_id", order.OrderID, "error", err)
 		a.edit(ctx, chatID, messageID, tr(locale, "订单已创建，但暂时无法获取支付方式。订单号：", "訂單已建立，但暫時無法取得付款方式。訂單號：", "The order was created, but payment methods are unavailable. Order: ")+html.EscapeString(order.OrderNo), a.homeKeyboard(locale))
-		return
+		return nil
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+2)
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "余额支付", "餘額付款", "Pay with balance"), CallbackData: fmt.Sprintf("pay:%d:0:1", order.OrderID)}})
@@ -692,6 +710,7 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 	text += "\n" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
 	text += "\n\n" + tr(locale, "请选择支付方式：", "請選擇付款方式：", "Choose a payment method:")
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	return nil
 }
 
 func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, userID int64, orderID, channelID uint, useBalance bool) {

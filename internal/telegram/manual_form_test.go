@@ -22,18 +22,21 @@ import (
 )
 
 type formFixture struct {
-	mu           sync.Mutex
-	product      dujiao.ProductDetail
-	previews     []dujiao.OrderRequest
-	orders       []dujiao.OrderRequest
-	texts        []string
-	previewFails bool
-	nextID       atomic.Int64
+	mu                   sync.Mutex
+	product              dujiao.ProductDetail
+	previews             []dujiao.OrderRequest
+	orders               []dujiao.OrderRequest
+	texts                []string
+	previewFails         bool
+	couponExpired        bool
+	rejectCouponOnCreate bool
+	couponTotal          string
+	nextID               atomic.Int64
 }
 
 func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formFixture) {
 	t.Helper()
-	fixture := &formFixture{product: dujiao.ProductDetail{
+	fixture := &formFixture{couponTotal: "9.00", product: dujiao.ProductDetail{
 		Product:             dujiao.Product{ID: 3, Title: "Manual product", StockStatus: "in_stock", Currency: "CNY"},
 		MinPurchaseQuantity: 1, MaxPurchaseQuantity: 5,
 		ManualFormSchema: dujiao.ManualFormSchema{Fields: fields},
@@ -77,12 +80,28 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 				t.Error(err)
 			}
 			fixture.mu.Lock()
+			couponInvalid := request.CouponCode != "" && (request.CouponCode != "SAVE10" || fixture.couponExpired)
+			if !strings.HasSuffix(r.URL.Path, "/preview") && request.CouponCode != "" && fixture.rejectCouponOnCreate {
+				couponInvalid = true
+				fixture.couponExpired = true
+			}
+			if couponInvalid {
+				fixture.mu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 400, "error_code": "coupon_invalid", "msg": "coupon expired"})
+				return
+			}
+			total, discount := "10.00", "0.00"
+			if request.CouponCode != "" {
+				total = fixture.couponTotal
+				discount = "1.00"
+			}
 			if strings.HasSuffix(r.URL.Path, "/preview") {
 				fixture.previews = append(fixture.previews, request)
-				data = dujiao.OrderPreview{Valid: !fixture.previewFails, TotalAmount: "10.00", Currency: "CNY", Items: []dujiao.OrderPreviewItem{{ProductTitle: "Manual product", Quantity: 1, Subtotal: "10.00"}}}
+				data = dujiao.OrderPreview{Valid: !fixture.previewFails, OriginalAmount: "10.00", CouponDiscount: discount, TotalAmount: total, Currency: "CNY", Items: []dujiao.OrderPreviewItem{{ProductTitle: "Manual product", Quantity: 1, Subtotal: "10.00"}}}
 			} else {
 				fixture.orders = append(fixture.orders, request)
-				data = dujiao.OrderCreated{OrderID: 7, OrderNo: "DJ7", TotalAmount: "10.00", Currency: "CNY"}
+				data = dujiao.OrderCreated{OrderID: 7, OrderNo: "DJ7", TotalAmount: total, Currency: "CNY"}
 			}
 			fixture.mu.Unlock()
 		case "/api/v1/channel/payment-channels":

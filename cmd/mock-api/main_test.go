@@ -2,11 +2,79 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestDemoCouponPolicy(t *testing.T) {
+	for _, test := range []struct {
+		code            string
+		quantity        int
+		discount, total string
+		valid           bool
+	}{
+		{"", 3, "0.00", "29.70", true},
+		{"SAVE10", 3, "2.97", "26.73", true},
+		{"LESS5", 3, "5.00", "24.70", true},
+		{"LESS5", 2, "", "", false},
+		{"EXPIRED", 3, "", "", false},
+		{"save10", 3, "", "", false},
+	} {
+		t.Run(fmt.Sprintf("%s-%d", test.code, test.quantity), func(t *testing.T) {
+			payload := demoOrderInput{Items: []orderItem{{ProductID: 1, Quantity: test.quantity}}, CouponCode: test.code}
+			preview := demoBuildPreview(payload)
+			if preview["valid"] != test.valid {
+				t.Fatalf("preview = %#v", preview)
+			}
+			if test.valid && (preview["coupon_discount"] != test.discount || preview["total_amount"] != test.total) {
+				t.Fatalf("discounted preview = %#v", preview)
+			}
+			if !test.valid {
+				encoded, _ := json.Marshal(payload)
+				for _, path := range []string{"/api/v1/channel/orders/preview", "/api/v1/channel/orders"} {
+					recorder := httptest.NewRecorder()
+					dujiaoHandler(recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(encoded))))
+					if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"coupon_invalid"`) {
+						t.Fatalf("coupon response = %d %s", recorder.Code, recorder.Body)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDemoCouponOrderChargesDiscountedBalance(t *testing.T) {
+	orderMu.Lock()
+	originalOrders := demoOrders
+	orderMu.Unlock()
+	walletTransactionMu.Lock()
+	originalTransactions := demoWalletTransactions
+	walletTransactionMu.Unlock()
+	originalBalance := walletBalanceCents.Load()
+	t.Cleanup(func() {
+		orderMu.Lock()
+		demoOrders = originalOrders
+		orderMu.Unlock()
+		walletTransactionMu.Lock()
+		demoWalletTransactions = originalTransactions
+		walletTransactionMu.Unlock()
+		walletBalanceCents.Store(originalBalance)
+	})
+	walletBalanceCents.Store(10_000)
+	created := demoCreateOrder(httptest.NewRequest(http.MethodPost, "/api/v1/channel/orders", strings.NewReader(`{"items":[{"product_id":1,"quantity":2}],"coupon_code":"SAVE10"}`)))
+	if created == nil || created["coupon_code"] != "SAVE10" || created["coupon_discount"] != "1.98" || created["total_amount"] != "17.82" {
+		t.Fatalf("discounted order = %#v", created)
+	}
+	if !completeDemoOrder(created["order_id"].(uint), true) {
+		t.Fatal("discounted order payment failed")
+	}
+	if balance := walletBalanceCents.Load(); balance != 8_218 {
+		t.Fatalf("discounted balance = %d", balance)
+	}
+}
 
 func TestDemoOrderListFiltersAndPaginates(t *testing.T) {
 	orderMu.Lock()

@@ -2,8 +2,6 @@ package telegram
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"html"
 	"reflect"
@@ -32,15 +30,10 @@ func (a *App) startManualForm(ctx context.Context, chatID int64, messageID int, 
 		a.edit(ctx, chatID, messageID, tr(locale, "商店表单配置暂不受支持，请联系商家。", "商店表單設定暫不受支援，請聯絡商家。", "This form configuration is not supported. Please contact the store."), a.homeKeyboard(locale))
 		return
 	}
-	var randomID [8]byte
-	if _, err := rand.Read(randomID[:]); err != nil {
+	draft, err := newPurchaseDraft(chatID, product, skuID, quantity)
+	if err != nil {
 		a.apiFailure(ctx, chatID, locale, "create form session", err)
 		return
-	}
-	draft := &session.PurchaseDraft{
-		ID: hex.EncodeToString(randomID[:]), ChatID: chatID, ProductID: product.ID, SKUID: skuID,
-		Quantity: quantity, Schema: product.ManualFormSchema, Values: make(map[string]any),
-		ExpiresAt: time.Now().Add(formLifetime),
 	}
 	a.sessions.Update(user.ID, func(state *session.State) { state.Flow = "manual_form"; state.Purchase = draft })
 	a.edit(ctx, chatID, messageID, tr(locale, "请按提示逐项填写购买资料。可发送 /back 返回上一项，/cancel 取消。", "請依提示逐項填寫購買資料。可傳送 /back 返回上一項，/cancel 取消。", "Fill in each purchase detail below. Use /back for the previous field or /cancel to cancel."), nil)
@@ -56,7 +49,7 @@ func (a *App) formDraft(userID, chatID int64) *session.PurchaseDraft {
 }
 
 func (a *App) expiredForm(ctx context.Context, chatID int64, locale string) {
-	a.send(ctx, chatID, tr(locale, "这份表单已失效，请重新打开商品填写。", "這份表單已失效，請重新開啟商品填寫。", "This form is no longer active. Reopen the product to fill it in."), a.homeKeyboard(locale))
+	a.send(ctx, chatID, tr(locale, "订单预览或购买资料已失效，请重新打开商品。", "訂單預覽或購買資料已失效，請重新開啟商品。", "This checkout is no longer active. Reopen the product."), a.homeKeyboard(locale))
 }
 
 func (a *App) promptForm(ctx context.Context, user *models.User, editID int) {
@@ -307,33 +300,32 @@ func (a *App) previewForm(ctx context.Context, user *models.User, draft *session
 		a.expiredForm(ctx, draft.ChatID, locale)
 		return
 	}
-	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: draft.ChatID, Text: tr(locale, "正在预览订单…", "正在預覽訂單…", "Preparing order preview…")})
-	if err != nil {
-		a.logger.Error("send form preview", "error", err)
+	messageID := draft.PreviewID
+	if messageID == 0 {
+		message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: draft.ChatID, Text: tr(locale, "正在预览订单…", "正在預覽訂單…", "Preparing order preview…")})
+		if err != nil {
+			a.logger.Error("send form preview", "error", err)
+			return
+		}
+		messageID = message.ID
+	}
+	if !a.validatePurchaseQuantity(ctx, draft.ChatID, messageID, user.ID, locale, draft.ProductID, draft.SKUID, draft.Quantity) {
 		return
 	}
-	if !a.validatePurchaseQuantity(ctx, draft.ChatID, message.ID, user.ID, locale, draft.ProductID, draft.SKUID, draft.Quantity) {
-		return
-	}
-	request := dujiao.OrderRequest{
-		TelegramIdentity: identityFromUser(user, locale),
-		Items:            []dujiao.OrderItemRequest{{ProductID: draft.ProductID, SKUID: draft.SKUID, Quantity: draft.Quantity}},
-		ManualFormData:   map[string]any{manualform.ItemKey(draft.ProductID, draft.SKUID): values},
-	}
+	request := draftOrderRequest(user, locale, draft, values)
 	callback := fmt.Sprintf("formconfirm:%s:%d", draft.ID, draft.Revision)
-	ready := a.renderOrderPreview(ctx, draft.ChatID, message.ID, locale, request, callback, formSummary(locale, draft.Schema, values))
+	preview, previewErr := a.renderOrderPreview(ctx, draft.ChatID, messageID, locale, request, callback, formSummary(locale, draft.Schema, values))
 	a.sessions.Update(user.ID, func(state *session.State) {
 		if current := state.Purchase; current != nil && current.ID == draft.ID && current.Revision == draft.Revision && !current.Submitting {
-			current.Ready = ready
-			current.PreviewID = message.ID
+			current.Ready = previewErr == nil
+			current.PreviewID = messageID
+			current.PreviewTotal = preview.TotalAmount
+			current.PreviewCurrency = preview.Currency
 			state.Flow = ""
 		}
 	})
-	if !ready {
-		a.edit(ctx, draft.ChatID, message.ID, tr(locale, "订单预览失败，资料已保留，请修改资料后重试或返回商品。", "訂單預覽失敗，資料已保留，請修改資料後重試或返回商品。", "Order preview failed. Your details are saved; edit them to retry or return to the product."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: fmt.Sprintf("formedit:%s:%d", draft.ID, draft.Revision)}},
-			{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", draft.ProductID)}},
-		}})
+	if previewErr != nil {
+		a.showCheckoutError(ctx, draft, messageID, locale, previewErr)
 	}
 }
 
@@ -349,12 +341,18 @@ func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session
 	if !claimed {
 		return
 	}
-	defer a.sessions.Update(user.ID, func(state *session.State) {
-		if current := state.Purchase; current != nil && current.ID == draft.ID {
-			state.Purchase = nil
-			state.Flow = ""
+	retained := false
+	defer func() {
+		if retained {
+			return
 		}
-	})
+		a.sessions.Update(user.ID, func(state *session.State) {
+			if current := state.Purchase; current != nil && current.ID == draft.ID {
+				state.Purchase = nil
+				state.Flow = ""
+			}
+		})
+	}()
 	locale := a.sessions.Get(user.ID).Locale
 	product, err := a.api.Product(ctx, locale, strconv.FormatInt(user.ID, 10), draft.ProductID)
 	if err != nil {
@@ -369,10 +367,28 @@ func (a *App) confirmForm(ctx context.Context, user *models.User, draft *session
 	if err != nil || !a.validatePurchaseQuantity(ctx, draft.ChatID, draft.PreviewID, user.ID, locale, draft.ProductID, draft.SKUID, draft.Quantity) {
 		return
 	}
-	a.createOrderWithData(ctx, draft.ChatID, draft.PreviewID, user, draft.ProductID, draft.SKUID, draft.Quantity, map[string]any{manualform.ItemKey(draft.ProductID, draft.SKUID): values})
+	if draft.CouponCode != "" {
+		preview, err := a.api.PreviewOrder(ctx, draftOrderRequest(user, locale, draft, values))
+		if err != nil || !preview.Valid || preview.TotalAmount != draft.PreviewTotal || preview.Currency != draft.PreviewCurrency {
+			retained = true
+			a.restoreCheckout(ctx, user, draft)
+			if err == nil && preview.Valid {
+				a.send(ctx, draft.ChatID, tr(locale, "优惠后金额已变化，请核对新预览后再次确认。", "優惠後金額已變更，請核對新預覽後再次確認。", "The discounted total has changed. Review the new preview and confirm again."), nil)
+			}
+			return
+		}
+	}
+	err = a.createOrderWithData(ctx, draft.ChatID, draft.PreviewID, user, draft.ProductID, draft.SKUID, draft.Quantity, draftOrderRequest(user, locale, draft, values).ManualFormData, draft.CouponCode)
+	if isAPIError(err, "coupon_invalid") {
+		retained = true
+		a.restoreCheckout(ctx, user, draft)
+	}
 }
 
 func formSummary(locale string, schema dujiao.ManualFormSchema, values map[string]any) string {
+	if len(schema.Fields) == 0 {
+		return ""
+	}
 	text := "\n\n<b>" + tr(locale, "购买资料", "購買資料", "Purchase details") + "</b>"
 	for _, field := range schema.Fields {
 		value, exists := values[field.Key]
