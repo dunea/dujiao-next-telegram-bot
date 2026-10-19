@@ -252,6 +252,13 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			productID, _ := strconv.ParseUint(parts[1], 10, 64)
 			a.showProduct(ctx, message.Chat.ID, query.From.ID, uint(productID), true, message.ID)
 		}
+	case "qty":
+		if len(parts) == 4 {
+			productID, _ := strconv.ParseUint(parts[1], 10, 64)
+			skuID, _ := strconv.ParseUint(parts[2], 10, 64)
+			quantity, _ := strconv.Atoi(parts[3])
+			a.showQuantitySelector(ctx, message.Chat.ID, message.ID, query.From.ID, uint(productID), uint(skuID), quantity)
+		}
 	case "buy":
 		if len(parts) == 4 {
 			productID, _ := strconv.ParseUint(parts[1], 10, 64)
@@ -328,6 +335,8 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		}
 	case "help":
 		a.showHelpEdit(ctx, message.Chat.ID, message.ID, locale)
+	case "none":
+		return
 	case "noop":
 		_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: query.ID,
@@ -418,6 +427,12 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 	if product.StockDisplay != "" {
 		text += "\n" + tr(locale, "库存：", "庫存：", "Stock: ") + html.EscapeString(product.StockDisplay)
 	}
+	minimum, maximum := purchaseQuantityLimits(product)
+	if maximum > 0 {
+		text += fmt.Sprintf("\n%s%d–%d", tr(locale, "购买数量：", "購買數量：", "Quantity: "), minimum, maximum)
+	} else if minimum > 1 {
+		text += fmt.Sprintf("\n%s%d", tr(locale, "起购数量：", "起購數量：", "Minimum quantity: "), minimum)
+	}
 	description := strings.TrimSpace(product.Summary)
 	if description == "" {
 		description = strings.TrimSpace(product.Description)
@@ -425,17 +440,23 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 	if description != "" {
 		text += "\n\n" + html.EscapeString(truncate(description, 2500))
 	}
-	quantity := product.MinPurchaseQuantity
-	if quantity < 1 {
-		quantity = 1
-	}
+	quantity := minimum
 	rows := make([][]models.InlineKeyboardButton, 0, len(product.SKUs)+2)
 	if len(product.ManualFormSchema.Fields) > 0 {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "需要填写资料，请前往网页购买", "需要填寫資料，請前往網頁購買", "Requires a form; please purchase on the website"), CallbackData: "noop"}})
 	} else if product.StockStatus == "out_of_stock" {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已售罄", "已售罄", "Out of stock"), CallbackData: "noop"}})
 	} else if len(product.SKUs) == 0 {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "立即购买", "立即購買", "Buy now"), CallbackData: fmt.Sprintf("buy:%d:0:%d", product.ID, quantity)}})
+		_, maximum, available := purchaseQuantityBounds(product, 0)
+		if !available {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "库存不足", "庫存不足", "Insufficient stock"), CallbackData: "noop"}})
+		} else {
+			label := tr(locale, "选择数量", "選擇數量", "Choose quantity")
+			if maximum == quantity {
+				label = tr(locale, "立即购买", "立即購買", "Buy now")
+			}
+			rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: fmt.Sprintf("qty:%d:0:%d", product.ID, quantity)}})
+		}
 	} else {
 		for _, sku := range product.SKUs {
 			label := sku.SpecValues
@@ -450,8 +471,10 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 				label += " · " + price + " " + product.Currency
 			}
 			callback := "noop"
-			if sku.StockStatus != "out_of_stock" {
-				callback = fmt.Sprintf("buy:%d:%d:%d", product.ID, sku.ID, quantity)
+			if _, _, available := purchaseQuantityBounds(product, sku.ID); available {
+				callback = fmt.Sprintf("qty:%d:%d:%d", product.ID, sku.ID, quantity)
+			} else {
+				label += " · " + tr(locale, "库存不足", "庫存不足", "Unavailable")
 			}
 			rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: callback}})
 		}
@@ -460,10 +483,93 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
+func (a *App) showQuantitySelector(ctx context.Context, chatID int64, messageID int, userID int64, productID, skuID uint, quantity int) {
+	locale := a.sessions.Get(userID).Locale
+	product, err := a.api.Product(ctx, locale, strconv.FormatInt(userID, 10), productID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "get product quantity options", err)
+		return
+	}
+	minimum, maximum, available := purchaseQuantityBounds(product, skuID)
+	if !available {
+		text := tr(locale, "该商品或规格库存不足，暂时无法购买。", "該商品或規格庫存不足，暫時無法購買。", "This product or option does not have enough stock.")
+		a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
+		return
+	}
+	quantity = clampPurchaseQuantity(quantity, minimum, maximum)
+	selection := selectedSKU(product, skuID)
+	price := product.PriceFrom
+	name := product.Title
+	if selection != nil {
+		name += " · " + skuLabel(*selection)
+		price = selection.Price
+		if selection.MemberPrice != "" {
+			price = selection.MemberPrice
+		}
+	} else if product.MemberPriceFrom != "" {
+		price = product.MemberPriceFrom
+	}
+	text := "<b>" + html.EscapeString(name) + "</b>"
+	if price != "" {
+		text += "\n\n" + tr(locale, "单价：", "單價：", "Unit price: ") + html.EscapeString(price+" "+product.Currency)
+	}
+	text += fmt.Sprintf("\n%s<b>%d</b>", tr(locale, "数量：", "數量：", "Quantity: "), quantity)
+	if maximum > 0 {
+		text += fmt.Sprintf("\n%s%d–%d", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum, maximum)
+	} else {
+		text += fmt.Sprintf("\n%s%d+", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum)
+	}
+	decreaseCallback := "none"
+	if quantity > minimum {
+		decreaseCallback = fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity-1)
+	}
+	increaseCallback := "none"
+	if maximum == 0 || quantity < maximum {
+		increaseCallback = fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity+1)
+	}
+	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{
+			{Text: "−", CallbackData: decreaseCallback},
+			{Text: fmt.Sprintf("%d", quantity), CallbackData: "none"},
+			{Text: "+", CallbackData: increaseCallback},
+		},
+		{{Text: tr(locale, "立即购买", "立即購買", "Buy now"), CallbackData: fmt.Sprintf("buy:%d:%d:%d", productID, skuID, quantity)}},
+		{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}},
+	}}
+	a.edit(ctx, chatID, messageID, text, keyboard)
+}
+
+func (a *App) validatePurchaseQuantity(ctx context.Context, chatID int64, messageID int, userID int64, locale string, productID, skuID uint, quantity int) bool {
+	product, err := a.api.Product(ctx, locale, strconv.FormatInt(userID, 10), productID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "validate product quantity", err)
+		return false
+	}
+	minimum, maximum, available := purchaseQuantityBounds(product, skuID)
+	if available && quantity >= minimum && (maximum == 0 || quantity <= maximum) {
+		return true
+	}
+	message := tr(locale, "所选数量已超过当前购买限制或库存，请重新选择。", "所選數量已超過目前購買限制或庫存，請重新選擇。", "The selected quantity exceeds the current purchase limit or stock. Choose again.")
+	if !available {
+		message = tr(locale, "该商品或规格当前不可购买，请重新选择。", "該商品或規格目前無法購買，請重新選擇。", "This product or option is currently unavailable. Choose again.")
+	} else if maximum > 0 {
+		message += fmt.Sprintf("\n%s%d–%d", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum, maximum)
+	} else {
+		message += fmt.Sprintf("\n%s%d+", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum)
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, 2)
+	if available {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "重新选择数量", "重新選擇數量", "Choose quantity"), CallbackData: fmt.Sprintf("qty:%d:%d:%d", productID, skuID, minimum)}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}})
+	a.edit(ctx, chatID, messageID, message, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	return false
+}
+
 func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int) {
 	locale := a.sessions.Get(user.ID).Locale
-	if quantity < 1 {
-		quantity = 1
+	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
+		return
 	}
 	request := dujiao.OrderRequest{
 		TelegramIdentity: identityFromUser(user, locale),
@@ -472,6 +578,14 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 	preview, err := a.api.PreviewOrder(ctx, request)
 	if err != nil {
 		a.apiFailure(ctx, chatID, locale, "preview order", err)
+		return
+	}
+	if !preview.Valid {
+		message := tr(locale, "当前商品数量或库存不再可用，请返回商品重试。", "目前商品數量或庫存已不可用，請返回商品重試。", "The selected quantity or stock is no longer available. Return to the product and try again.")
+		if len(preview.ValidationErrors) > 0 {
+			message += "\n\n" + html.EscapeString(strings.Join(preview.ValidationErrors, "\n"))
+		}
+		a.edit(ctx, chatID, messageID, message, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
 		return
 	}
 	title := tr(locale, "确认订单", "確認訂單", "Confirm order")
@@ -493,6 +607,9 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 
 func (a *App) createOrder(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int) {
 	locale := a.sessions.Get(user.ID).Locale
+	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
+		return
+	}
 	a.edit(ctx, chatID, messageID, tr(locale, "正在创建订单…", "正在建立訂單…", "Creating order…"), nil)
 	request := dujiao.OrderRequest{
 		TelegramIdentity: identityFromUser(user, locale),
@@ -1205,6 +1322,81 @@ func formatFulfillmentPayload(payload any) string {
 		return ""
 	}
 	return string(encoded)
+}
+
+func purchaseQuantityLimits(product dujiao.ProductDetail) (minimum, maximum int) {
+	minimum = product.MinPurchaseQuantity
+	if minimum < 1 {
+		minimum = 1
+	}
+	maximum = product.MaxPurchaseQuantity
+	if maximum < 1 {
+		maximum = 0
+	}
+	return minimum, maximum
+}
+
+func purchaseQuantityBounds(product dujiao.ProductDetail, skuID uint) (minimum, maximum int, available bool) {
+	minimum, maximum = purchaseQuantityLimits(product)
+	if len(product.ManualFormSchema.Fields) > 0 {
+		return minimum, maximum, false
+	}
+	if product.StockStatus == "out_of_stock" {
+		return minimum, maximum, false
+	}
+	stockCount := product.StockCount
+	stockHidden := product.StockHidden
+	if len(product.SKUs) > 0 {
+		sku := selectedSKU(product, skuID)
+		if sku == nil || sku.StockStatus == "out_of_stock" {
+			return minimum, maximum, false
+		}
+		stockCount = sku.StockCount
+		stockHidden = sku.StockHidden
+	} else if skuID != 0 {
+		return minimum, maximum, false
+	}
+	if !stockHidden && stockCount != nil && *stockCount >= 0 {
+		if *stockCount < int64(minimum) {
+			return minimum, int(*stockCount), false
+		}
+		if maximum == 0 || int64(maximum) > *stockCount {
+			maximum = int(*stockCount)
+		}
+	}
+	if maximum > 0 && maximum < minimum {
+		return minimum, maximum, false
+	}
+	return minimum, maximum, true
+}
+
+func clampPurchaseQuantity(quantity, minimum, maximum int) int {
+	if quantity < minimum {
+		return minimum
+	}
+	if maximum > 0 && quantity > maximum {
+		return maximum
+	}
+	return quantity
+}
+
+func selectedSKU(product dujiao.ProductDetail, skuID uint) *dujiao.SKU {
+	for index := range product.SKUs {
+		if product.SKUs[index].ID == skuID {
+			return &product.SKUs[index]
+		}
+	}
+	return nil
+}
+
+func skuLabel(sku dujiao.SKU) string {
+	if label := strings.TrimSpace(sku.SpecValues); label != "" {
+		return label
+	}
+	if label := strings.TrimSpace(sku.SKUCode); label != "" {
+		return label
+	}
+	return fmt.Sprintf("SKU #%d", sku.ID)
 }
 
 func orderStatus(locale, status string) string {

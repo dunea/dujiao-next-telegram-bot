@@ -34,6 +34,7 @@ type demoSKU struct {
 	Name       string
 	Code       string
 	PriceCents int
+	StockCount int64
 }
 
 type demoProduct struct {
@@ -44,18 +45,21 @@ type demoProduct struct {
 	Description string
 	PriceCents  int
 	Stock       string
+	StockCount  int64
+	MinQuantity int
+	MaxQuantity int
 	ManualForm  bool
 	SKUs        []demoSKU
 }
 
 var demoProducts = []demoProduct{
-	{ID: 1, CategoryID: 1, Title: "演示云服务器", Summary: "即时开通的测试云服务器商品", Description: "这是机器人演示商品，不会产生真实服务或扣款。", PriceCents: 990, Stock: "充足"},
-	{ID: 2, CategoryID: 2, Title: "软件授权码", Summary: "包含月付与年付两种规格", Description: "购买后由演示环境模拟自动发货。", PriceCents: 1990, Stock: "充足", SKUs: []demoSKU{
-		{ID: 21, Name: "月付版", Code: "MONTHLY", PriceCents: 1990},
-		{ID: 22, Name: "年付版", Code: "YEARLY", PriceCents: 9900},
+	{ID: 1, CategoryID: 1, Title: "演示云服务器", Summary: "即时开通的测试云服务器商品", Description: "这是机器人演示商品，不会产生真实服务或扣款。", PriceCents: 990, Stock: "剩余 20", StockCount: 20, MinQuantity: 2, MaxQuantity: 5},
+	{ID: 2, CategoryID: 2, Title: "软件授权码", Summary: "包含月付与年付两种规格", Description: "购买后由演示环境模拟自动发货。", PriceCents: 1990, Stock: "充足", StockCount: 15, MinQuantity: 1, MaxQuantity: 10, SKUs: []demoSKU{
+		{ID: 21, Name: "月付版", Code: "MONTHLY", PriceCents: 1990, StockCount: 12},
+		{ID: 22, Name: "年付版", Code: "YEARLY", PriceCents: 9900, StockCount: 3},
 	}},
-	{ID: 3, CategoryID: 1, Title: "人工配置服务", Summary: "用于演示需要填写资料的商品", Description: "该商品会展示机器人暂不支持自定义表单的提示。", PriceCents: 2990, Stock: "充足", ManualForm: true},
-	{ID: 4, CategoryID: 2, Title: "限量兑换码", Summary: "用于演示售罄状态", Description: "该演示商品当前没有库存。", PriceCents: 500, Stock: "已售罄"},
+	{ID: 3, CategoryID: 1, Title: "人工配置服务", Summary: "用于演示需要填写资料的商品", Description: "该商品会展示机器人暂不支持自定义表单的提示。", PriceCents: 2990, Stock: "剩余 10", StockCount: 10, MaxQuantity: 5, ManualForm: true},
+	{ID: 4, CategoryID: 2, Title: "限量兑换码", Summary: "用于演示售罄状态", Description: "该演示商品当前没有库存。", PriceCents: 500, Stock: "已售罄", StockCount: 0, MaxQuantity: 5},
 }
 
 func main() {
@@ -163,7 +167,16 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 			{"id": 1, "name": channelName, "provider_type": "demo", "channel_type": "web", "interaction_mode": interactionMode, "fee_rate": "0.00", "fixed_fee": "0.00"},
 		}}
 	case "/payments":
-		data = demoCreatePayment(request)
+		payment, errorCode := demoCreatePayment(request)
+		if errorCode != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status_code": 400, "msg": "演示钱包余额不足", "error_code": errorCode, "request_id": "mock",
+			})
+			return
+		}
+		data = payment
 	case "/wallet":
 		data = map[string]any{"balance": money(int(walletBalanceCents.Load())), "currency": "CNY"}
 	case "/wallet/transactions":
@@ -214,7 +227,9 @@ func demoProductDetail(id uint) map[string]any {
 	for _, sku := range product.SKUs {
 		skus = append(skus, map[string]any{
 			"id": sku.ID, "sku_code": sku.Code, "spec_values": sku.Name,
-			"price": money(sku.PriceCents), "stock_status": "in_stock", "stock_display": "充足",
+			"price": money(sku.PriceCents), "stock_status": demoStockStatus(sku.StockCount),
+			"stock_count": sku.StockCount, "stock_display": fmt.Sprintf("剩余 %d", sku.StockCount),
+			"stock_quantity_hidden": false,
 		})
 	}
 	fields := []any{}
@@ -227,9 +242,10 @@ func demoProductDetail(id uint) map[string]any {
 	return map[string]any{
 		"id": product.ID, "title": product.Title, "summary": product.Summary,
 		"description": product.Description, "price_from": money(product.PriceCents), "currency": "CNY",
-		"stock_status": stockStatus(product), "stock_display": product.Stock,
+		"stock_status": stockStatus(product), "stock_count": product.StockCount,
+		"stock_display": product.Stock, "stock_quantity_hidden": false,
 		"category_name": categoryName(product.CategoryID), "fulfillment_type": "auto",
-		"min_purchase_quantity": 1, "max_purchase_quantity": 5,
+		"min_purchase_quantity": product.MinQuantity, "max_purchase_quantity": product.MaxQuantity,
 		"manual_form_schema": map[string]any{"fields": fields}, "skus": skus,
 	}
 }
@@ -237,9 +253,23 @@ func demoProductDetail(id uint) map[string]any {
 func demoOrderPreview(request *http.Request) map[string]any {
 	items := decodeOrderItems(request)
 	previewItems := make([]map[string]any, 0, len(items))
+	validationErrors := make([]string, 0)
 	total := 0
 	for _, item := range items {
-		product, _ := findProduct(item.ProductID)
+		product, ok := findProduct(item.ProductID)
+		if !ok {
+			validationErrors = append(validationErrors, "商品不存在")
+			continue
+		}
+		minimum, maximum, available := demoQuantityBounds(product, item.SKUID)
+		if !available {
+			validationErrors = append(validationErrors, product.Title+" 当前库存不足")
+			continue
+		}
+		if item.Quantity < minimum || (maximum > 0 && item.Quantity > maximum) {
+			validationErrors = append(validationErrors, fmt.Sprintf("%s 购买数量必须为 %d–%d", product.Title, minimum, maximum))
+			continue
+		}
 		price, skuName := product.PriceCents, ""
 		for _, sku := range product.SKUs {
 			if sku.ID == item.SKUID {
@@ -257,7 +287,8 @@ func demoOrderPreview(request *http.Request) map[string]any {
 	return map[string]any{
 		"item_count": len(previewItems), "items": previewItems, "original_amount": money(total),
 		"coupon_discount": "0.00", "promotion_discount": "0.00", "wholesale_discount": "0.00",
-		"total_amount": money(total), "currency": "CNY", "valid": true, "validation_errors": []any{},
+		"total_amount": money(total), "currency": "CNY", "valid": len(validationErrors) == 0,
+		"validation_errors": validationErrors,
 	}
 }
 
@@ -340,7 +371,7 @@ func demoCancelOrder(orderID uint) map[string]any {
 	return map[string]any{}
 }
 
-func demoCreatePayment(request *http.Request) map[string]any {
+func demoCreatePayment(request *http.Request) (map[string]any, string) {
 	var payload struct {
 		OrderID    uint `json:"order_id"`
 		ChannelID  uint `json:"channel_id"`
@@ -348,15 +379,20 @@ func demoCreatePayment(request *http.Request) map[string]any {
 	}
 	_ = json.NewDecoder(request.Body).Decode(&payload)
 	if payload.UseBalance {
-		completeDemoOrder(payload.OrderID, true)
+		if moneyToCents(demoOrderAmount(payload.OrderID)) > walletBalanceCents.Load() {
+			return nil, "insufficient_wallet_balance"
+		}
+		if !completeDemoOrder(payload.OrderID, true) {
+			return nil, "insufficient_wallet_balance"
+		}
 	} else {
 		go func() {
 			time.Sleep(8 * time.Second)
-			completeDemoOrder(payload.OrderID, false)
+			_ = completeDemoOrder(payload.OrderID, false)
 		}()
 	}
 	if payload.UseBalance {
-		return map[string]any{"order_paid": true, "order_id": payload.OrderID, "status": "success", "currency": "CNY"}
+		return map[string]any{"order_paid": true, "order_id": payload.OrderID, "status": "success", "currency": "CNY"}, ""
 	}
 	amount := demoOrderAmount(payload.OrderID)
 	return map[string]any{
@@ -364,7 +400,7 @@ func demoCreatePayment(request *http.Request) map[string]any {
 		"status": "pending", "channel_name": "演示二维码支付", "amount": amount, "currency": "CNY",
 		"interaction_mode": "qr", "qr_code": fmt.Sprintf("dujiao-demo://payment/%d", payload.OrderID),
 		"expires_at": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
-	}
+	}, ""
 }
 
 func demoOrderAmount(orderID uint) string {
@@ -380,12 +416,26 @@ func demoOrderAmount(orderID uint) string {
 	return "0.00"
 }
 
-func completeDemoOrder(orderID uint, useBalance bool) {
+func completeDemoOrder(orderID uint, useBalance bool) bool {
 	orderMu.Lock()
 	defer orderMu.Unlock()
 	for _, order := range demoOrders {
 		if order["order_id"] == orderID && order["status"] == "pending_payment" {
 			amount, _ := order["total_amount"].(string)
+			amountCents := moneyToCents(amount)
+			var balanceAfter int64
+			if useBalance {
+				for {
+					balance := walletBalanceCents.Load()
+					if balance < amountCents {
+						return false
+					}
+					balanceAfter = balance - amountCents
+					if walletBalanceCents.CompareAndSwap(balance, balanceAfter) {
+						break
+					}
+				}
+			}
 			order["status"] = "completed"
 			order["paid_amount"] = order["total_amount"]
 			order["paid_at"] = time.Now().UTC().Format(time.RFC3339)
@@ -397,14 +447,14 @@ func completeDemoOrder(orderID uint, useBalance bool) {
 			order["fulfillment_instructions"] = "复制演示授权码后，在对应软件的激活页面中填写。"
 			if useBalance {
 				order["wallet_paid_amount"] = order["total_amount"]
-				amountCents := moneyToCents(amount)
-				balanceAfter := walletBalanceCents.Add(-amountCents)
 				recordWalletTransaction("order_pay", "out", amountCents, balanceAfter, fmt.Sprintf("订单 %v", order["order_no"]))
 			} else {
 				order["online_paid_amount"] = order["total_amount"]
 			}
+			return true
 		}
 	}
+	return false
 }
 
 func demoWalletRecharge(request *http.Request) map[string]any {
@@ -499,10 +549,47 @@ func money(cents int) string {
 }
 
 func stockStatus(product demoProduct) string {
-	if product.Stock == "已售罄" {
+	return demoStockStatus(product.StockCount)
+}
+
+func demoStockStatus(stockCount int64) string {
+	if stockCount == 0 {
 		return "out_of_stock"
 	}
 	return "in_stock"
+}
+
+func demoQuantityBounds(product demoProduct, skuID uint) (minimum, maximum int, available bool) {
+	minimum = product.MinQuantity
+	if minimum < 1 {
+		minimum = 1
+	}
+	maximum = product.MaxQuantity
+	stockCount := product.StockCount
+	if len(product.SKUs) > 0 {
+		found := false
+		for _, sku := range product.SKUs {
+			if sku.ID == skuID {
+				stockCount = sku.StockCount
+				found = true
+				break
+			}
+		}
+		if !found {
+			return minimum, maximum, false
+		}
+	} else if skuID != 0 {
+		return minimum, maximum, false
+	}
+	if stockCount >= 0 {
+		if stockCount < int64(minimum) {
+			return minimum, int(stockCount), false
+		}
+		if maximum < 1 || int64(maximum) > stockCount {
+			maximum = int(stockCount)
+		}
+	}
+	return minimum, maximum, true
 }
 
 func categoryName(id uint) string {

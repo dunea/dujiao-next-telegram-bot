@@ -107,6 +107,8 @@ type Product struct {
 	Currency        string `json:"currency"`
 	StockStatus     string `json:"stock_status"`
 	StockDisplay    string `json:"stock_display"`
+	StockCount      *int64 `json:"stock_count"`
+	StockHidden     bool   `json:"stock_quantity_hidden"`
 	CategoryName    string `json:"category_name"`
 }
 
@@ -136,6 +138,8 @@ type SKU struct {
 	MemberPrice  string `json:"member_price"`
 	StockStatus  string `json:"stock_status"`
 	StockDisplay string `json:"stock_display"`
+	StockCount   *int64 `json:"stock_count"`
+	StockHidden  bool   `json:"stock_quantity_hidden"`
 }
 
 type ManualFormSchema struct {
