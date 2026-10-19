@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -29,6 +31,41 @@ func TestDemoOrderListFiltersAndPaginates(t *testing.T) {
 	}
 	if result["total"] != 2 || result["total_pages"] != 2 {
 		t.Fatalf("pagination = %#v", result)
+	}
+}
+
+func TestDemoManualOrderRejectsMissingDataAndRetainsSubmission(t *testing.T) {
+	invalid := httptest.NewRequest(http.MethodPost, "/api/v1/channel/orders", strings.NewReader(`{"items":[{"product_id":3,"quantity":1}]}`))
+	recorder := httptest.NewRecorder()
+	dujiaoHandler(recorder, invalid)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("missing form data status = %d", recorder.Code)
+	}
+
+	orderMu.Lock()
+	originalOrders := demoOrders
+	orderMu.Unlock()
+	t.Cleanup(func() { orderMu.Lock(); demoOrders = originalOrders; orderMu.Unlock() })
+	valid := httptest.NewRequest(http.MethodPost, "/api/v1/channel/orders", strings.NewReader(`{"items":[{"product_id":3,"quantity":1}],"manual_form_data":{"3:0":{"hostname":"demo.example.com","email":"demo@example.com","region":"香港","addons":["备份"]}}}`))
+	created := demoCreateOrder(valid)
+	if created == nil || created["fulfillment_type"] != "manual" {
+		t.Fatalf("manual order = %#v", created)
+	}
+	items := created["items"].([]map[string]any)
+	submission := items[0]["manual_form_submission"].(map[string]any)
+	if submission["hostname"] != "demo.example.com" {
+		t.Fatalf("submission = %#v", submission)
+	}
+	if !completeDemoOrder(created["order_id"].(uint), false) {
+		t.Fatal("manual order payment failed")
+	}
+	detail := demoOrderDetail(created["order_id"].(uint))
+	if detail["status"] != "processing" || detail["fulfillment_result"] != nil {
+		t.Fatalf("manual payment did not enter processing: %#v", detail)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil || !strings.Contains(string(encoded), "demo.example.com") {
+		t.Fatalf("stored details lost: %s, %v", encoded, err)
 	}
 }
 

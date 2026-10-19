@@ -130,7 +130,20 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		return
 	}
 	message := update.Message
+	command, argument := parseCommand(message.Text)
 	state := a.sessions.Get(message.From.ID)
+	navigating := false
+	switch command {
+	case "/start", "/products", "/orders", "/wallet", "/recharge", "/language", "/help", "/cancel":
+		navigating = true
+	}
+	if state.Flow == "manual_form" && !navigating {
+		a.handleFormMessage(ctx, message)
+		return
+	}
+	if navigating && state.Purchase != nil {
+		a.sessions.ResetFlow(message.From.ID)
+	}
 	if state.Flow == "invite" && !strings.HasPrefix(message.Text, "/") {
 		a.finishInvite(ctx, message, strings.TrimSpace(message.Text))
 		return
@@ -140,7 +153,6 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		return
 	}
 
-	command, argument := parseCommand(message.Text)
 	switch command {
 	case "/start":
 		a.start(ctx, message, argument)
@@ -236,6 +248,13 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := a.sessions.Get(query.From.ID).Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "form" || parts[0] == "formconfirm" || parts[0] == "formedit" {
+		a.handleFormCallback(ctx, query, parts)
+		return
+	}
+	if parts[0] != "none" && parts[0] != "noop" {
+		a.sessions.ResetFlow(query.From.ID)
+	}
 	switch parts[0] {
 	case "home":
 		a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "请选择功能：", "請選擇功能：", "Choose an action:"), a.homeKeyboard(locale))
@@ -442,9 +461,7 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 	}
 	quantity := minimum
 	rows := make([][]models.InlineKeyboardButton, 0, len(product.SKUs)+2)
-	if len(product.ManualFormSchema.Fields) > 0 {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "需要填写资料，请前往网页购买", "需要填寫資料，請前往網頁購買", "Requires a form; please purchase on the website"), CallbackData: "noop"}})
-	} else if product.StockStatus == "out_of_stock" {
+	if product.StockStatus == "out_of_stock" {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已售罄", "已售罄", "Out of stock"), CallbackData: "noop"}})
 	} else if len(product.SKUs) == 0 {
 		_, maximum, available := purchaseQuantityBounds(product, 0)
@@ -571,14 +588,28 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
 		return
 	}
+	product, err := a.api.Product(ctx, locale, strconv.FormatInt(user.ID, 10), productID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "get purchase form", err)
+		return
+	}
+	if len(product.ManualFormSchema.Fields) > 0 {
+		a.startManualForm(ctx, chatID, messageID, user, product, skuID, quantity)
+		return
+	}
 	request := dujiao.OrderRequest{
 		TelegramIdentity: identityFromUser(user, locale),
 		Items:            []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
 	}
+	a.renderOrderPreview(ctx, chatID, messageID, locale, request, fmt.Sprintf("confirm:%d:%d:%d", productID, skuID, quantity), "")
+}
+
+func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID int, locale string, request dujiao.OrderRequest, confirmCallback, formSummary string) bool {
+	productID := request.Items[0].ProductID
 	preview, err := a.api.PreviewOrder(ctx, request)
 	if err != nil {
 		a.apiFailure(ctx, chatID, locale, "preview order", err)
-		return
+		return false
 	}
 	if !preview.Valid {
 		message := tr(locale, "当前商品数量或库存不再可用，请返回商品重试。", "目前商品數量或庫存已不可用，請返回商品重試。", "The selected quantity or stock is no longer available. Return to the product and try again.")
@@ -586,7 +617,7 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 			message += "\n\n" + html.EscapeString(strings.Join(preview.ValidationErrors, "\n"))
 		}
 		a.edit(ctx, chatID, messageID, message, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
-		return
+		return false
 	}
 	title := tr(locale, "确认订单", "確認訂單", "Confirm order")
 	text := "<b>" + title + "</b>"
@@ -598,11 +629,19 @@ func (a *App) previewOrder(ctx context.Context, chatID int64, messageID int, use
 		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(preview.Currency))
 	}
 	text += "\n\n<b>" + tr(locale, "合计：", "合計：", "Total: ") + html.EscapeString(preview.TotalAmount+" "+preview.Currency) + "</b>"
+	text += formSummary
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: tr(locale, "确认下单", "確認下單", "Place order"), CallbackData: fmt.Sprintf("confirm:%d:%d:%d", productID, skuID, quantity)}},
+		{{Text: tr(locale, "确认下单", "確認下單", "Place order"), CallbackData: confirmCallback}},
 		{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}},
 	}}
+	if strings.HasPrefix(confirmCallback, "formconfirm:") {
+		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard[:1],
+			[]models.InlineKeyboardButton{{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: strings.Replace(confirmCallback, "formconfirm:", "formedit:", 1)}},
+			keyboard.InlineKeyboard[1],
+		)
+	}
 	a.edit(ctx, chatID, messageID, text, keyboard)
+	return true
 }
 
 func (a *App) createOrder(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int) {
@@ -610,10 +649,25 @@ func (a *App) createOrder(ctx context.Context, chatID int64, messageID int, user
 	if !a.validatePurchaseQuantity(ctx, chatID, messageID, user.ID, locale, productID, skuID, quantity) {
 		return
 	}
+	product, err := a.api.Product(ctx, locale, strconv.FormatInt(user.ID, 10), productID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "get order form", err)
+		return
+	}
+	if len(product.ManualFormSchema.Fields) > 0 {
+		a.startManualForm(ctx, chatID, messageID, user, product, skuID, quantity)
+		return
+	}
+	a.createOrderWithData(ctx, chatID, messageID, user, productID, skuID, quantity, nil)
+}
+
+func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID int, user *models.User, productID, skuID uint, quantity int, formData map[string]any) {
+	locale := a.sessions.Get(user.ID).Locale
 	a.edit(ctx, chatID, messageID, tr(locale, "正在创建订单…", "正在建立訂單…", "Creating order…"), nil)
 	request := dujiao.OrderRequest{
 		TelegramIdentity: identityFromUser(user, locale),
 		Items:            []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
+		ManualFormData:   formData,
 	}
 	order, err := a.api.CreateOrder(ctx, request)
 	if err != nil {
@@ -1338,9 +1392,6 @@ func purchaseQuantityLimits(product dujiao.ProductDetail) (minimum, maximum int)
 
 func purchaseQuantityBounds(product dujiao.ProductDetail, skuID uint) (minimum, maximum int, available bool) {
 	minimum, maximum = purchaseQuantityLimits(product)
-	if len(product.ManualFormSchema.Fields) > 0 {
-		return minimum, maximum, false
-	}
 	if product.StockStatus == "out_of_stock" {
 		return minimum, maximum, false
 	}

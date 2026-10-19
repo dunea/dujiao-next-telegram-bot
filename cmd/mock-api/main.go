@@ -12,6 +12,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/manualform"
 )
 
 var telegramRequests atomic.Uint64
@@ -58,7 +61,7 @@ var demoProducts = []demoProduct{
 		{ID: 21, Name: "月付版", Code: "MONTHLY", PriceCents: 1990, StockCount: 12},
 		{ID: 22, Name: "年付版", Code: "YEARLY", PriceCents: 9900, StockCount: 3},
 	}},
-	{ID: 3, CategoryID: 1, Title: "人工配置服务", Summary: "用于演示需要填写资料的商品", Description: "该商品会展示机器人暂不支持自定义表单的提示。", PriceCents: 2990, Stock: "剩余 10", StockCount: 10, MaxQuantity: 5, ManualForm: true},
+	{ID: 3, CategoryID: 1, Title: "人工配置服务", Summary: "填写域名、邮箱和配置偏好后下单", Description: "在 Telegram 中填写资料并预览，付款后模拟进入人工处理。请使用虚构资料测试。", PriceCents: 2990, Stock: "剩余 10", StockCount: 10, MaxQuantity: 5, ManualForm: true},
 	{ID: 4, CategoryID: 2, Title: "限量兑换码", Summary: "用于演示售罄状态", Description: "该演示商品当前没有库存。", PriceCents: 500, Stock: "已售罄", StockCount: 0, MaxQuantity: 5},
 }
 
@@ -154,7 +157,14 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodGet {
 			data = demoOrderList(request)
 		} else {
-			data = demoCreateOrder(request)
+			created := demoCreateOrder(request)
+			if created == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 400, "error_code": "validation_error", "msg": "商品数量或购买资料无效"})
+				return
+			}
+			data = created
 		}
 	case "/payment-channels":
 		channelName := "演示二维码支付"
@@ -232,26 +242,35 @@ func demoProductDetail(id uint) map[string]any {
 			"stock_quantity_hidden": false,
 		})
 	}
-	fields := []any{}
-	if product.ManualForm {
-		fields = []any{map[string]any{
-			"key": "hostname", "type": "text", "required": true,
-			"label": "主机名称", "placeholder": "demo.example.com",
-		}}
-	}
+	schema := demoManualSchema(product)
 	return map[string]any{
 		"id": product.ID, "title": product.Title, "summary": product.Summary,
 		"description": product.Description, "price_from": money(product.PriceCents), "currency": "CNY",
 		"stock_status": stockStatus(product), "stock_count": product.StockCount,
 		"stock_display": product.Stock, "stock_quantity_hidden": false,
-		"category_name": categoryName(product.CategoryID), "fulfillment_type": "auto",
+		"category_name": categoryName(product.CategoryID), "fulfillment_type": demoFulfillmentType(product),
 		"min_purchase_quantity": product.MinQuantity, "max_purchase_quantity": product.MaxQuantity,
-		"manual_form_schema": map[string]any{"fields": fields}, "skus": skus,
+		"manual_form_schema": schema, "skus": skus,
 	}
 }
 
 func demoOrderPreview(request *http.Request) map[string]any {
-	items := decodeOrderItems(request)
+	var payload demoOrderInput
+	if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		return demoInvalidPreview()
+	}
+	return demoBuildPreview(payload)
+}
+
+func demoInvalidPreview() map[string]any {
+	return map[string]any{"valid": false, "items": []map[string]any{}, "validation_errors": []string{"订单数据无效"}}
+}
+
+func demoBuildPreview(payload demoOrderInput) map[string]any {
+	items := payload.Items
+	if len(items) == 0 {
+		return demoInvalidPreview()
+	}
 	previewItems := make([]map[string]any, 0, len(items))
 	validationErrors := make([]string, 0)
 	total := 0
@@ -270,6 +289,19 @@ func demoOrderPreview(request *http.Request) map[string]any {
 			validationErrors = append(validationErrors, fmt.Sprintf("%s 购买数量必须为 %d–%d", product.Title, minimum, maximum))
 			continue
 		}
+		var submission map[string]any
+		if product.ManualForm {
+			input := payload.ManualFormData[manualform.ItemKey(item.ProductID, item.SKUID)]
+			if input == nil {
+				input = payload.ManualFormData[strconv.FormatUint(uint64(item.ProductID), 10)]
+			}
+			var err error
+			submission, err = manualform.Normalize(demoManualSchema(product), input)
+			if err != nil {
+				validationErrors = append(validationErrors, product.Title+" 购买资料无效")
+				continue
+			}
+		}
 		price, skuName := product.PriceCents, ""
 		for _, sku := range product.SKUs {
 			if sku.ID == item.SKUID {
@@ -281,7 +313,8 @@ func demoOrderPreview(request *http.Request) map[string]any {
 		previewItems = append(previewItems, map[string]any{
 			"product_id": product.ID, "product_title": product.Title, "sku_id": item.SKUID,
 			"sku_name": skuName, "quantity": item.Quantity, "unit_price": money(price),
-			"subtotal": money(subtotal), "fulfillment_type": "auto",
+			"subtotal": money(subtotal), "fulfillment_type": demoFulfillmentType(product),
+			"manual_form_submission": submission,
 		})
 	}
 	return map[string]any{
@@ -294,6 +327,9 @@ func demoOrderPreview(request *http.Request) map[string]any {
 
 func demoCreateOrder(request *http.Request) map[string]any {
 	preview := demoOrderPreview(request)
+	if preview["valid"] != true {
+		return nil
+	}
 	items := preview["items"].([]map[string]any)
 	orderID := uint(orderSequence.Add(1))
 	orderNo := fmt.Sprintf("DEMO%06d", orderID)
@@ -301,19 +337,22 @@ func demoCreateOrder(request *http.Request) map[string]any {
 	if len(items) > 0 {
 		title, _ = items[0]["product_title"].(string)
 	}
+	fulfillmentType := "auto"
+	if len(items) > 0 {
+		fulfillmentType, _ = items[0]["fulfillment_type"].(string)
+	}
 	createdAt := time.Now().UTC().Format(time.RFC3339)
 	order := map[string]any{
 		"order_id": orderID, "order_no": orderNo, "status": "pending_payment", "currency": "CNY",
 		"total_amount": preview["total_amount"], "paid_amount": "0.00", "wallet_paid_amount": "0.00",
 		"online_paid_amount": "0.00", "product_title": title, "item_count": len(items), "created_at": createdAt,
-		"fulfillment_type": "auto", "fulfillment_status": "", "fulfillment_result": nil,
+		"fulfillment_type": fulfillmentType, "fulfillment_status": "", "fulfillment_result": nil,
 		"fulfillment_instructions": "", "children": []any{}, "items": items,
 	}
 	orderMu.Lock()
 	demoOrders = append([]map[string]any{order}, demoOrders...)
 	orderMu.Unlock()
 	result := cloneMap(order)
-	result["fulfillment_type"] = "auto"
 	return result
 }
 
@@ -445,6 +484,12 @@ func completeDemoOrder(orderID uint, useBalance bool) bool {
 				"note":        "这是演示交付内容，不可用于真实服务。",
 			}
 			order["fulfillment_instructions"] = "复制演示授权码后，在对应软件的激活页面中填写。"
+			if order["fulfillment_type"] == "manual" {
+				order["status"] = "processing"
+				order["fulfillment_status"] = "pending"
+				order["fulfillment_result"] = nil
+				order["fulfillment_instructions"] = "演示人工配置订单已进入处理，购买资料已随订单保存。"
+			}
 			if useBalance {
 				order["wallet_paid_amount"] = order["total_amount"]
 				recordWalletTransaction("order_pay", "out", amountCents, balanceAfter, fmt.Sprintf("订单 %v", order["order_no"]))
@@ -527,12 +572,30 @@ type orderItem struct {
 	Quantity  int  `json:"quantity"`
 }
 
-func decodeOrderItems(request *http.Request) []orderItem {
-	var payload struct {
-		Items []orderItem `json:"items"`
+type demoOrderInput struct {
+	Items          []orderItem               `json:"items"`
+	ManualFormData map[string]map[string]any `json:"manual_form_data"`
+}
+
+func demoFulfillmentType(product demoProduct) string {
+	if product.ManualForm {
+		return "manual"
 	}
-	_ = json.NewDecoder(request.Body).Decode(&payload)
-	return payload.Items
+	return "auto"
+}
+
+func demoManualSchema(product demoProduct) dujiao.ManualFormSchema {
+	if !product.ManualForm {
+		return dujiao.ManualFormSchema{Fields: []dujiao.ManualFormField{}}
+	}
+	maxLen := 64
+	return dujiao.ManualFormSchema{Fields: []dujiao.ManualFormField{
+		{Key: "hostname", Type: "text", Required: true, Label: "主机名称", Placeholder: "例如 demo.example.com", Regex: `^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}$`, MaxLen: &maxLen},
+		{Key: "email", Type: "email", Required: true, Label: "联系邮箱", Placeholder: "例如 demo@example.com"},
+		{Key: "region", Type: "select", Required: true, Label: "部署区域", Options: []string{"香港", "新加坡", "日本"}},
+		{Key: "addons", Type: "checkbox", Label: "附加配置（可多选）", Options: []string{"监控", "备份", "自动更新"}},
+		{Key: "note", Type: "textarea", Label: "补充说明（可跳过）", MaxLen: &maxLen},
+	}}
 }
 
 func findProduct(id uint) (demoProduct, bool) {

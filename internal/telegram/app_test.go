@@ -125,8 +125,8 @@ func TestPurchaseQuantityBounds(t *testing.T) {
 
 	product.SKUs = nil
 	product.ManualFormSchema.Fields = []dujiao.ManualFormField{{Key: "hostname"}}
-	if _, _, available = purchaseQuantityBounds(product, 0); available {
-		t.Fatal("manual form product bypassed the form flow")
+	if _, _, available = purchaseQuantityBounds(product, 0); !available {
+		t.Fatal("manual form product cannot select a quantity")
 	}
 }
 

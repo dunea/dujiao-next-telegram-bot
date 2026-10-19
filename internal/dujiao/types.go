@@ -154,6 +154,9 @@ type ManualFormField struct {
 	Placeholder string   `json:"placeholder"`
 	Regex       string   `json:"regex"`
 	Options     []string `json:"options"`
+	Min         *float64 `json:"min"`
+	Max         *float64 `json:"max"`
+	MaxLen      *int     `json:"max_len"`
 }
 
 type OrderItemRequest struct {
