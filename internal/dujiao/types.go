@@ -226,6 +226,63 @@ type OrderList struct {
 	TotalPages int64           `json:"total_pages"`
 }
 
+type OrderDetail struct {
+	OrderID                 uint              `json:"order_id"`
+	OrderNo                 string            `json:"order_no"`
+	Status                  string            `json:"status"`
+	FulfillmentType         string            `json:"fulfillment_type"`
+	Currency                string            `json:"currency"`
+	ItemCount               int               `json:"item_count"`
+	TotalAmount             string            `json:"total_amount"`
+	PaidAmount              string            `json:"paid_amount"`
+	WalletPaidAmount        string            `json:"wallet_paid_amount"`
+	OnlinePaidAmount        string            `json:"online_paid_amount"`
+	ExpiresAt               string            `json:"expires_at"`
+	CreatedAt               string            `json:"created_at"`
+	PaidAt                  string            `json:"paid_at"`
+	CancelledAt             string            `json:"cancelled_at"`
+	Items                   []OrderDetailItem `json:"items"`
+	Children                []OrderChild      `json:"children"`
+	FulfillmentStatus       string            `json:"fulfillment_status"`
+	FulfillmentResult       any               `json:"fulfillment_result"`
+	FulfillmentDeliveredAt  string            `json:"fulfillment_delivered_at"`
+	FulfillmentInstructions string            `json:"fulfillment_instructions"`
+}
+
+type OrderDetailItem struct {
+	ProductID       uint   `json:"product_id"`
+	ProductTitle    string `json:"product_title"`
+	SKUID           uint   `json:"sku_id"`
+	SKUName         string `json:"sku_name"`
+	Quantity        int    `json:"quantity"`
+	UnitPrice       string `json:"unit_price"`
+	Subtotal        string `json:"subtotal"`
+	FulfillmentType string `json:"fulfillment_type"`
+	Instructions    string `json:"instructions"`
+}
+
+type OrderChild struct {
+	OrderID     uint              `json:"order_id"`
+	OrderNo     string            `json:"order_no"`
+	Status      string            `json:"status"`
+	Fulfillment *OrderFulfillment `json:"fulfillment"`
+}
+
+type OrderFulfillment struct {
+	Status       string `json:"status"`
+	Type         string `json:"type"`
+	Payload      any    `json:"payload"`
+	DeliveredAt  string `json:"delivered_at"`
+	Instructions string `json:"instructions"`
+}
+
+type OrderCancelled struct {
+	OrderID     uint   `json:"order_id"`
+	OrderNo     string `json:"order_no"`
+	Status      string `json:"status"`
+	CancelledAt string `json:"cancelled_at"`
+}
+
 type Wallet struct {
 	Balance  string `json:"balance"`
 	Currency string `json:"currency"`

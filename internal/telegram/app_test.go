@@ -65,3 +65,13 @@ func TestNormalizeMoneyInput(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatFulfillmentPayload(t *testing.T) {
+	got := formatFulfillmentPayload(map[string]any{"card": "DEMO-123"})
+	if got != "{\n  \"card\": \"DEMO-123\"\n}" {
+		t.Fatalf("formatFulfillmentPayload = %q", got)
+	}
+	if got := formatFulfillmentPayload(nil); got != "" {
+		t.Fatalf("nil payload = %q", got)
+	}
+}

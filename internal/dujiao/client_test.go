@@ -114,6 +114,31 @@ func TestClientCreatesWalletRecharge(t *testing.T) {
 	}
 }
 
+func TestClientGetsOrderDetail(t *testing.T) {
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/channel/orders/23" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.URL.Query().Get("channel_user_id") != "42" || request.URL.Query().Get("locale") != "zh-CN" {
+			t.Errorf("query = %q", request.URL.RawQuery)
+		}
+		response := `{"status_code":0,"msg":"success","data":{"order_id":23,"order_no":"DJ23","status":"completed","currency":"CNY","total_amount":"9.90","fulfillment_status":"delivered","fulfillment_result":{"card":"DEMO-CARD"}}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	client, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = transport
+	order, err := client.Order(context.Background(), "42", "zh-CN", 23)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.OrderNo != "DJ23" || order.FulfillmentStatus != "delivered" {
+		t.Fatalf("order = %#v", order)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

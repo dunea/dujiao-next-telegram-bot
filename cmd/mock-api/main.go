@@ -167,6 +167,15 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(path, "/catalog/products/") {
 			id, _ := strconv.ParseUint(strings.TrimPrefix(path, "/catalog/products/"), 10, 64)
 			data = demoProductDetail(uint(id))
+		} else if strings.HasPrefix(path, "/orders/") {
+			orderPath := strings.TrimPrefix(path, "/orders/")
+			if strings.HasSuffix(orderPath, "/cancel") {
+				id, _ := strconv.ParseUint(strings.TrimSuffix(orderPath, "/cancel"), 10, 64)
+				data = demoCancelOrder(uint(id))
+			} else {
+				id, _ := strconv.ParseUint(orderPath, 10, 64)
+				data = demoOrderDetail(uint(id))
+			}
 		}
 	}
 	writeJSON(w, map[string]any{"status_code": 0, "msg": "success", "data": data, "request_id": "mock"})
@@ -259,6 +268,8 @@ func demoCreateOrder(request *http.Request) map[string]any {
 		"order_id": orderID, "order_no": orderNo, "status": "pending_payment", "currency": "CNY",
 		"total_amount": preview["total_amount"], "paid_amount": "0.00", "wallet_paid_amount": "0.00",
 		"online_paid_amount": "0.00", "product_title": title, "item_count": len(items), "created_at": createdAt,
+		"fulfillment_type": "auto", "fulfillment_status": "", "fulfillment_result": nil,
+		"fulfillment_instructions": "", "children": []any{}, "items": items,
 	}
 	orderMu.Lock()
 	demoOrders = append([]map[string]any{order}, demoOrders...)
@@ -278,6 +289,36 @@ func demoOrderList() map[string]any {
 	return map[string]any{"items": items, "total": len(items), "page": 1, "page_size": 5, "total_pages": pageCount(len(items), 5)}
 }
 
+func demoOrderDetail(orderID uint) map[string]any {
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	for _, order := range demoOrders {
+		if order["order_id"] == orderID {
+			return cloneMap(order)
+		}
+	}
+	return map[string]any{}
+}
+
+func demoCancelOrder(orderID uint) map[string]any {
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	for _, order := range demoOrders {
+		if order["order_id"] != orderID {
+			continue
+		}
+		if order["status"] == "pending_payment" {
+			order["status"] = "cancelled"
+			order["cancelled_at"] = time.Now().UTC().Format(time.RFC3339)
+		}
+		return map[string]any{
+			"order_id": orderID, "order_no": order["order_no"], "status": order["status"],
+			"cancelled_at": order["cancelled_at"],
+		}
+	}
+	return map[string]any{}
+}
+
 func demoCreatePayment(request *http.Request) map[string]any {
 	var payload struct {
 		OrderID    uint `json:"order_id"`
@@ -290,6 +331,13 @@ func demoCreatePayment(request *http.Request) map[string]any {
 		if order["order_id"] == payload.OrderID {
 			order["status"] = "completed"
 			order["paid_amount"] = order["total_amount"]
+			order["paid_at"] = time.Now().UTC().Format(time.RFC3339)
+			order["fulfillment_status"] = "delivered"
+			order["fulfillment_result"] = map[string]any{
+				"license_key": fmt.Sprintf("DEMO-%06d-ABCD-EFGH", payload.OrderID),
+				"note":        "这是演示交付内容，不可用于真实服务。",
+			}
+			order["fulfillment_instructions"] = "复制演示授权码后，在对应软件的激活页面中填写。"
 			if payload.UseBalance {
 				order["wallet_paid_amount"] = order["total_amount"]
 			} else {

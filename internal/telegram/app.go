@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -263,6 +264,26 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			page, _ = strconv.Atoi(parts[1])
 		}
 		a.showOrders(ctx, message.Chat.ID, query.From.ID, page, true, message.ID)
+	case "order":
+		if len(parts) == 2 {
+			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
+			a.showOrder(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID))
+		}
+	case "orderpay":
+		if len(parts) == 2 {
+			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
+			a.showOrderPaymentMethods(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID))
+		}
+	case "cancelask":
+		if len(parts) == 2 {
+			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
+			a.confirmCancelOrder(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID))
+		}
+	case "cancelorder":
+		if len(parts) == 2 {
+			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
+			a.cancelOrder(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID))
+		}
 	case "wallet":
 		a.showWallet(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "recharge":
@@ -486,7 +507,11 @@ func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, us
 		return
 	}
 	if result.OrderPaid {
-		a.edit(ctx, chatID, messageID, "✅ "+tr(locale, "支付成功，系统正在处理订单。", "付款成功，系統正在處理訂單。", "Payment successful. Your order is being processed."), a.homeKeyboard(locale))
+		keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}},
+			{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}},
+		}}
+		a.edit(ctx, chatID, messageID, "✅ "+tr(locale, "支付成功，系统正在处理订单。", "付款成功，系統正在處理訂單。", "Payment successful. Your order is being processed."), keyboard)
 		return
 	}
 	text := "<b>" + tr(locale, "请完成支付", "請完成付款", "Complete payment") + "</b>"
@@ -499,10 +524,12 @@ func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, us
 	if result.ChainAmount != "" {
 		text += "\n" + tr(locale, "链上金额：", "鏈上金額：", "On-chain amount: ") + "<code>" + html.EscapeString(result.ChainAmount) + "</code>"
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, 2)
+	rows := make([][]models.InlineKeyboardButton, 0, 4)
 	if strings.HasPrefix(result.PayURL, "https://") || strings.HasPrefix(result.PayURL, "http://") {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "前往支付", "前往付款", "Pay now"), URL: result.PayURL}})
 	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新支付状态", "重新整理付款狀態", "Refresh payment status"), CallbackData: fmt.Sprintf("order:%d", orderID)}})
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", orderID)}})
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
@@ -527,6 +554,15 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, ed
 	if len(orders.Items) == 0 {
 		text += "\n\n" + tr(locale, "还没有订单。", "尚無訂單。", "No orders yet.")
 	}
+	rows := make([][]models.InlineKeyboardButton, 0, len(orders.Items)+2)
+	for _, order := range orders.Items {
+		label := order.ProductTitle
+		if label == "" {
+			label = order.OrderNo
+		}
+		label += " · " + orderStatus(locale, order.Status)
+		rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
+	}
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
 		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("orders:%d", page-1)})
@@ -534,12 +570,109 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, ed
 	if int64(page) < orders.TotalPages {
 		pager = append(pager, models.InlineKeyboardButton{Text: "›", CallbackData: fmt.Sprintf("orders:%d", page+1)})
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, 2)
 	if len(pager) > 0 {
 		rows = append(rows, pager)
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
+}
+
+func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	locale := a.sessions.Get(userID).Locale
+	order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "get order", err)
+		return
+	}
+	text := "<b>" + tr(locale, "订单详情", "訂單詳情", "Order details") + "</b>"
+	text += "\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + "<code>" + html.EscapeString(order.OrderNo) + "</code>"
+	text += "\n" + tr(locale, "状态：", "狀態：", "Status: ") + html.EscapeString(orderStatus(locale, order.Status))
+	text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
+	for index, item := range order.Items {
+		if index >= 5 {
+			text += "\n…"
+			break
+		}
+		text += "\n\n<b>" + html.EscapeString(item.ProductTitle) + "</b>"
+		if item.SKUName != "" {
+			text += " · " + html.EscapeString(item.SKUName)
+		}
+		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(order.Currency))
+	}
+	if instructions := strings.TrimSpace(order.FulfillmentInstructions); instructions != "" {
+		text += "\n\n<b>" + tr(locale, "使用说明", "使用說明", "Instructions") + "</b>\n" + html.EscapeString(truncate(instructions, 500))
+	}
+	if delivery := formatFulfillmentPayload(order.FulfillmentResult); delivery != "" {
+		text += "\n\n<b>" + tr(locale, "交付内容", "交付內容", "Delivery") + "</b>\n<pre>" + html.EscapeString(truncate(delivery, 1200)) + "</pre>"
+	}
+	for index, child := range order.Children {
+		if index >= 1 {
+			break
+		}
+		if child.Fulfillment == nil {
+			continue
+		}
+		if delivery := formatFulfillmentPayload(child.Fulfillment.Payload); delivery != "" {
+			text += "\n\n<b>" + html.EscapeString(child.OrderNo) + "</b>\n<pre>" + html.EscapeString(truncate(delivery, 600)) + "</pre>"
+		}
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, 4)
+	if order.Status == "pending_payment" {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method"), CallbackData: fmt.Sprintf("orderpay:%d", order.OrderID)}})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:1"}})
+	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) showOrderPaymentMethods(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	locale := a.sessions.Get(userID).Locale
+	order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "get order for payment", err)
+		return
+	}
+	if order.Status != "pending_payment" {
+		a.showOrder(ctx, chatID, messageID, userID, orderID)
+		return
+	}
+	channels, err := a.api.PaymentChannels(ctx, strconv.FormatInt(userID, 10), order.OrderNo)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "list payment channels", err)
+		return
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+2)
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "余额支付", "餘額付款", "Pay with balance"), CallbackData: fmt.Sprintf("pay:%d:0:1", order.OrderID)}})
+	if !channels.WalletOnlyPayment {
+		for _, channel := range channels.Items {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: channel.Name, CallbackData: fmt.Sprintf("pay:%d:%d:0", order.OrderID, channel.ID)}})
+		}
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
+	text := "<b>" + tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method") + "</b>\n\n"
+	text += tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
+	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) confirmCancelOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	locale := a.sessions.Get(userID).Locale
+	text := tr(locale, "确定取消这个待支付订单吗？", "確定取消這個待付款訂單嗎？", "Cancel this pending order?")
+	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: tr(locale, "确认取消", "確認取消", "Confirm cancellation"), CallbackData: fmt.Sprintf("cancelorder:%d", orderID)}},
+		{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", orderID)}},
+	}}
+	a.edit(ctx, chatID, messageID, text, keyboard)
+}
+
+func (a *App) cancelOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	locale := a.sessions.Get(userID).Locale
+	if _, err := a.api.CancelOrder(ctx, strconv.FormatInt(userID, 10), orderID); err != nil {
+		a.logger.Error("cancel Dujiao order", "order_id", orderID, "error", err)
+		a.edit(ctx, chatID, messageID, tr(locale, "订单无法取消，可能已支付、已取消或已过期。", "訂單無法取消，可能已付款、已取消或已過期。", "The order cannot be cancelled. It may already be paid, cancelled, or expired."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}}}})
+		return
+	}
+	a.showOrder(ctx, chatID, messageID, userID, orderID)
 }
 
 func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
@@ -852,6 +985,23 @@ func normalizeMoneyInput(input string) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprintf("%.2f", value), true
+}
+
+func formatFulfillmentPayload(payload any) string {
+	if payload == nil {
+		return ""
+	}
+	if text, ok := payload.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return strings.TrimSpace(fmt.Sprint(payload))
+	}
+	if string(encoded) == "null" || string(encoded) == "{}" || string(encoded) == "[]" {
+		return ""
+	}
+	return string(encoded)
 }
 
 func orderStatus(locale, status string) string {

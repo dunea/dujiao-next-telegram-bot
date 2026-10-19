@@ -119,6 +119,20 @@ func (c *Client) Orders(ctx context.Context, channelUserID, locale string, page,
 	})
 }
 
+func (c *Client) Order(ctx context.Context, channelUserID, locale string, orderID uint) (OrderDetail, error) {
+	return get[OrderDetail](ctx, c, "/orders/"+strconv.FormatUint(uint64(orderID), 10), url.Values{
+		"channel_user_id": {channelUserID},
+		"locale":          {locale},
+	})
+}
+
+func (c *Client) CancelOrder(ctx context.Context, channelUserID string, orderID uint) (OrderCancelled, error) {
+	return post[OrderCancelled](ctx, c, "/orders/"+strconv.FormatUint(uint64(orderID), 10)+"/cancel", map[string]any{
+		"channel_user_id": channelUserID,
+		"reason":          "cancelled_by_telegram_user",
+	})
+}
+
 func (c *Client) Wallet(ctx context.Context, channelUserID string) (Wallet, error) {
 	return get[Wallet](ctx, c, "/wallet", url.Values{"channel_user_id": {channelUserID}})
 }
