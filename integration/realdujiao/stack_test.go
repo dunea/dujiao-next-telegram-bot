@@ -162,7 +162,10 @@ func newStack(t *testing.T, driver string) *stack {
 			"--network", s.id, "--network-alias", "postgres", "--mount", "type=volume,src="+s.volume+",dst=/var/lib/postgresql/data",
 			"-e", "POSTGRES_USER=fixture", "-e", "POSTGRES_PASSWORD="+s.adminPassword, "-e", "POSTGRES_DB=fixture", postgresImage)
 		s.wait(func() bool {
-			_, err := s.command(nil, "exec", s.pg, "pg_isready", "-U", "fixture", "-d", "fixture")
+			// The official image starts a temporary Unix-socket-only server
+			// during initdb. Probe TCP so a fast runner cannot start the API
+			// before the final network-listening PostgreSQL process is ready.
+			_, err := s.command(nil, "exec", s.pg, "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "fixture", "-d", "fixture")
 			return err == nil
 		})
 		dsn = "host=postgres user=fixture password=" + s.adminPassword + " dbname=fixture port=5432 sslmode=disable"
