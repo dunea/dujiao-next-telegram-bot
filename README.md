@@ -1,5 +1,8 @@
 # Dujiao Next Telegram Bot Community
 
+[![CI](https://github.com/dunea/dujiao-next-telegram-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/dunea/dujiao-next-telegram-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个免费、开源的 Dujiao-Next Telegram 商店机器人。项目使用 Go 开发，通过 Dujiao-Next Channel API 读取商店配置、商品、订单、钱包和支付信息。
 
 > 这是社区项目，不是 Dujiao-Next 官方收费机器人的替代授权，也不隶属于 Telegram。
