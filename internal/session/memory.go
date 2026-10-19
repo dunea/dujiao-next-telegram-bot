@@ -11,11 +11,37 @@ import (
 // State contains the small amount of ephemeral UI state needed by the bot.
 // Account, order and wallet data remain authoritative in Dujiao-Next.
 type State struct {
-	Locale   string
-	Flow     string
-	Purchase *PurchaseDraft
-	GiftCard *GiftCardInput
-	Recharge *RechargeDraft
+	Locale          string
+	Flow            string
+	Purchase        *PurchaseDraft
+	GiftCard        *GiftCardInput
+	Recharge        *RechargeDraft
+	Withdrawal      *WithdrawalDraft
+	WithdrawalGuard *WithdrawalGuard
+}
+
+type WithdrawalDraft struct {
+	ID        string
+	ChatID    int64
+	MessageID int
+	Step      string
+	Amount    string
+	Currency  string
+	Minimum   string
+	Available string
+	Channels  []string
+	Channel   string
+	Account   string
+	Busy      bool
+	ExpiresAt time.Time
+}
+
+// WithdrawalGuard survives menu navigation and draft expiry. It never contains
+// payment details. Unknown writes require a deliberate history review to unlock.
+type WithdrawalGuard struct {
+	ID              string
+	Status          string
+	ReviewMessageID int
 }
 
 // RechargeDraft binds amount/channel selection to one private-chat message.
@@ -62,6 +88,15 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.Withdrawal != nil {
+		draft := *state.Withdrawal
+		draft.Channels = slices.Clone(draft.Channels)
+		state.Withdrawal = &draft
+	}
+	if state.WithdrawalGuard != nil {
+		guard := *state.WithdrawalGuard
+		state.WithdrawalGuard = &guard
+	}
 	if state.Recharge != nil {
 		draft := *state.Recharge
 		draft.Channels = slices.Clone(draft.Channels)
@@ -116,6 +151,13 @@ func NewMemory(defaultLocale string) *Memory {
 func (m *Memory) Get(userID int64) State {
 	m.mu.Lock()
 	state, ok := m.users[userID]
+	if state.Withdrawal != nil && !time.Now().Before(state.Withdrawal.ExpiresAt) {
+		state.Withdrawal = nil
+		if state.Flow == "withdrawal" {
+			state.Flow = ""
+		}
+		m.users[userID] = state
+	}
 	if state.Recharge != nil && !time.Now().Before(state.Recharge.ExpiresAt) {
 		state.Recharge = nil
 		if state.Flow == "recharge_amount" || state.Flow == "recharge_channels" {
@@ -159,5 +201,11 @@ func (m *Memory) Update(userID int64, update func(*State)) State {
 }
 
 func (m *Memory) ResetFlow(userID int64) {
-	m.Update(userID, func(state *State) { state.Flow = ""; state.Purchase = nil; state.GiftCard = nil; state.Recharge = nil })
+	m.Update(userID, func(state *State) {
+		state.Flow = ""
+		state.Purchase = nil
+		state.GiftCard = nil
+		state.Recharge = nil
+		state.Withdrawal = nil
+	})
 }

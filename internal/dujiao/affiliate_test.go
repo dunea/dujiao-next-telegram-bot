@@ -117,3 +117,43 @@ func TestAffiliatePreservesPlainHTTPErrorsFromOlderStores(t *testing.T) {
 		}
 	}
 }
+
+func TestAffiliateWithdrawalSignsBodyAndRejectsUncertainAcknowledgement(t *testing.T) {
+	client, _ := NewClient("https://example.test", "key", "secret", time.Second)
+	const timestamp = int64(1700000000)
+	client.now = func() time.Time { return time.Unix(timestamp, 0) }
+	request := AffiliateWithdrawalRequest{ChannelUserID: "42", Amount: "20.00", Channel: "alipay", Account: "alice@example.com Alice"}
+	response := AffiliateWithdrawal{ID: 3, Amount: request.Amount, Channel: request.Channel, Account: request.Account, Status: "pending_review"}
+	client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var got AffiliateWithdrawalRequest
+		_ = json.Unmarshal(body, &got)
+		if r.Method != "POST" || r.URL.Path != channelPrefix+"/affiliate/withdraws" || got != request || !Verify("secret", r.Method, r.URL.Path, timestamp, body, r.Header.Get("Dujiao-Next-Channel-Signature")) {
+			t.Fatal("withdrawal request/signature mismatch")
+		}
+		data, _ := json.Marshal(response)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status_code":0,"data":` + string(data) + `}`))}, nil
+	})
+	if result, err := client.ApplyAffiliateWithdrawal(context.Background(), request); err != nil || result.ID != 3 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	for _, field := range []string{"id", "amount", "channel", "account", "status"} {
+		original := response
+		switch field {
+		case "id":
+			response.ID = 0
+		case "amount":
+			response.Amount = "30.00"
+		case "channel":
+			response.Channel = "usdt"
+		case "account":
+			response.Account = "other@example.com"
+		case "status":
+			response.Status = "unknown"
+		}
+		if _, err := client.ApplyAffiliateWithdrawal(context.Background(), request); err == nil {
+			t.Fatalf("inconsistent %s accepted as success", field)
+		}
+		response = original
+	}
+}

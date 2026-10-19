@@ -31,6 +31,10 @@ var demoAffiliateProfiles = map[string]*demoAffiliateProfile{
 var demoAffiliateClicks []demoAffiliateClick
 
 func demoAffiliateHandler(w http.ResponseWriter, request *http.Request, path string) {
+	if path == "/affiliate/withdraws" && request.Method == http.MethodPost {
+		demoApplyWithdrawal(w, request)
+		return
+	}
 	var identity dujiao.TelegramIdentity
 	var click dujiao.AffiliateClick
 	userID := request.URL.Query().Get("channel_user_id")
@@ -68,6 +72,7 @@ func demoAffiliateHandler(w http.ResponseWriter, request *http.Request, path str
 	case "/affiliate/open":
 		if profile == nil {
 			profile = &demoAffiliateProfile{Profile: dujiao.AffiliateProfile{ID: uint(len(demoAffiliateProfiles) + 1), Code: "DEMO" + userID, Status: "active"}}
+			demoSeedAffiliateCommission(profile)
 			demoAffiliateProfiles[userID] = profile
 		}
 		data = profile.Profile
@@ -92,20 +97,24 @@ func demoAffiliateHandler(w http.ResponseWriter, request *http.Request, path str
 		if profile != nil {
 			dashboard.Opened, dashboard.AffiliateCode, dashboard.PromotionPath, dashboard.ClickCount = true, profile.Profile.Code, "/?aff="+profile.Profile.Code, profile.Clicks
 			var pending, available, withdrawn int64
+			validOrders := make(map[string]bool)
 			for _, row := range profile.Commissions {
 				cents, _ := moneycalc.Parse(row.CommissionAmount)
 				switch row.Status {
 				case "pending_confirm":
 					pending += cents
-					dashboard.ValidOrderCount++
 				case "available":
-					available += cents
-					dashboard.ValidOrderCount++
+					if row.WithdrawalRequestID == 0 {
+						available += cents
+					}
 				case "withdrawn":
 					withdrawn += cents
-					dashboard.ValidOrderCount++
+				}
+				if row.OrderNo != "DEMO-SEED" && row.Status != "rejected" && row.OrderNo != "" {
+					validOrders[row.OrderNo] = true
 				}
 			}
+			dashboard.ValidOrderCount = int64(len(validOrders))
 			dashboard.PendingCommission, dashboard.AvailableCommission, dashboard.WithdrawnCommission = moneycalc.Format(pending), moneycalc.Format(available), moneycalc.Format(withdrawn)
 			if dashboard.ClickCount > 0 {
 				dashboard.ConversionRate = float64(dashboard.ValidOrderCount) * 100 / float64(dashboard.ClickCount)

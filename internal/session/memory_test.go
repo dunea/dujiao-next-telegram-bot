@@ -81,3 +81,30 @@ func TestGiftCardPromptIsolationAndExpiry(t *testing.T) {
 		t.Fatal("expired gift card input retained")
 	}
 }
+
+func TestWithdrawalDraftIsolationAndGuardSurvivesExpiryAndNavigation(t *testing.T) {
+	store := NewMemory("zh-CN")
+	draft := &WithdrawalDraft{ID: "draft", Account: "private", Channels: []string{"alipay"}, ExpiresAt: time.Now().Add(time.Minute)}
+	guard := &WithdrawalGuard{ID: "write", Status: "unknown"}
+	returned := store.Update(42, func(state *State) { state.Flow = "withdrawal"; state.Withdrawal = draft; state.WithdrawalGuard = guard })
+	draft.Channels[0] = "external"
+	guard.Status = "outside"
+	returned.Withdrawal.Account = "changed"
+	returned.WithdrawalGuard.Status = "changed"
+	read := store.Get(42)
+	read.Withdrawal.Channels[0] = "read"
+	read.WithdrawalGuard.Status = "read"
+	state := store.Get(42)
+	if state.Withdrawal.Channels[0] != "alipay" || state.Withdrawal.Account != "private" || state.WithdrawalGuard.Status != "unknown" {
+		t.Fatal("withdrawal state shares mutable pointers")
+	}
+	store.Update(42, func(state *State) { state.Withdrawal.ExpiresAt = time.Now().Add(-time.Second) })
+	if state := store.Get(42); state.Withdrawal != nil || state.Flow != "" || state.WithdrawalGuard == nil {
+		t.Fatal("draft expiry lost uncertainty guard or retained account")
+	}
+	store.Update(42, func(state *State) { state.Withdrawal = draft; state.Flow = "withdrawal" })
+	store.ResetFlow(42)
+	if state := store.Get(42); state.Withdrawal != nil || state.Flow != "" || state.WithdrawalGuard == nil {
+		t.Fatal("navigation discarded guard or retained sensitive draft")
+	}
+}

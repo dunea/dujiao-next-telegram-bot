@@ -28,6 +28,7 @@ type formFixture struct {
 	orders               []dujiao.OrderRequest
 	texts                []string
 	markups              []string
+	walletCurrency       string
 	previewFails         bool
 	couponExpired        bool
 	rejectCouponOnCreate bool
@@ -45,7 +46,7 @@ type formFixture struct {
 
 func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formFixture) {
 	t.Helper()
-	fixture := &formFixture{couponTotal: "9.00", product: dujiao.ProductDetail{
+	fixture := &formFixture{couponTotal: "9.00", walletCurrency: "CNY", product: dujiao.ProductDetail{
 		Product:             dujiao.Product{ID: 3, Title: "Manual product", StockStatus: "in_stock", Currency: "CNY"},
 		MinPurchaseQuantity: 1, MaxPurchaseQuantity: 5,
 		ManualFormSchema: dujiao.ManualFormSchema{Fields: fields},
@@ -130,7 +131,9 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 			}
 			data = dujiao.GiftCardRedemption{GiftCard: dujiao.GiftCard{Amount: "50.00", Currency: "CNY", Status: "redeemed"}, Wallet: dujiao.Wallet{Balance: "150.00"}, WalletDelta: "50.00", Transaction: dujiao.WalletTransaction{Type: "gift_card_redeem", Direction: "in", Amount: "50.00", BalanceAfter: "150.00"}}
 		case "/api/v1/channel/wallet":
-			data = dujiao.Wallet{Balance: "150.00", Currency: "CNY"}
+			fixture.mu.Lock()
+			data = dujiao.Wallet{Balance: "150.00", Currency: fixture.walletCurrency}
+			fixture.mu.Unlock()
 		case "/api/v1/channel/wallet/transactions":
 			data = dujiao.WalletTransactionList{Items: []dujiao.WalletTransaction{{Type: "gift_card_redeem", Direction: "in", Amount: "50.00", BalanceAfter: "150.00"}}, Page: 1, PageSize: 5, Total: 1, TotalPages: 1}
 		case "/api/v1/channel/catalog/products/3":

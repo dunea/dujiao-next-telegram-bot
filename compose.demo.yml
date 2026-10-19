@@ -2,6 +2,8 @@ name: dujiao-bot-demo
 
 services:
   demo-store:
+    environment:
+      DEMO_AFFILIATE_SEED_COMMISSION: "100.00"
     build:
       context: .
       dockerfile: Dockerfile.integration

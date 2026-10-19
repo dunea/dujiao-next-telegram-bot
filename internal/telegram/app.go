@@ -149,7 +149,11 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleGiftCardMessage(ctx, message)
 		return
 	}
-	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil) {
+	if state.Flow == "withdrawal" && !navigating {
+		a.handleWithdrawalMessage(ctx, message)
+		return
+	}
+	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Withdrawal != nil) {
 		a.sessions.ResetFlow(message.From.ID)
 	}
 	if state.Flow == "invite" && !strings.HasPrefix(message.Text, "/") {
@@ -182,6 +186,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.showHelp(ctx, message.Chat.ID, state.Locale)
 	case "/cancel":
 		a.sessions.ResetFlow(message.From.ID)
+		if state.WithdrawalGuard != nil {
+			a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前填写；已发出的提现申请无法通过 /cancel 撤回，请核对提现记录。", "已取消目前填寫；已送出的提領申請無法透過 /cancel 撤回，請核對提領紀錄。", "Current input cancelled. An already submitted withdrawal cannot be recalled with /cancel; check withdrawal history."), nil)
+			return
+		}
 		a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前操作。", "已取消目前操作。", "Current operation cancelled."), nil)
 	default:
 		a.send(ctx, message.Chat.ID, tr(state.Locale, "请使用下方菜单选择功能。", "請使用下方選單選擇功能。", "Please choose an action below."), a.homeKeyboard(state.Locale))
@@ -266,6 +274,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := a.sessions.Get(query.From.ID).Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "wd" || parts[0] == "wdack" {
+		a.handleWithdrawalCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "rechargepick" || parts[0] == "rechargepay" || parts[0] == "rechargepage" {
 		a.handleRechargeCallback(ctx, query, parts)
 		return
@@ -371,6 +383,8 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.showAffiliate(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "affopen":
 		a.openAffiliate(ctx, message, &query.From)
+	case "affapply":
+		a.startWithdrawal(ctx, message.Chat.ID, query.From.ID)
 	case "affcomm", "affwithdraws":
 		if len(parts) == 2 {
 			page, err := strconv.Atoi(parts[1])

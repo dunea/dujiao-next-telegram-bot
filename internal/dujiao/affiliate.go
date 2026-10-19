@@ -24,7 +24,7 @@ type AffiliateDashboard struct {
 	PendingCommission   string      `json:"pending_commission"`
 	AvailableCommission string      `json:"available_commission"`
 	WithdrawnCommission string      `json:"withdrawn_commission"`
-	MinWithdrawAmount   json.Number `json:"min_withdraw_amount"`
+	MinWithdrawAmount   json.Number `json:"min_withdraw_amount,omitempty"`
 	WithdrawChannels    []string    `json:"withdraw_channels"`
 }
 
@@ -37,12 +37,13 @@ type AffiliateClick struct {
 }
 
 type AffiliateCommission struct {
-	ID               uint   `json:"id"`
-	OrderNo          string `json:"order_no"`
-	CommissionAmount string `json:"commission_amount"`
-	RatePercent      string `json:"rate_percent"`
-	Status           string `json:"status"`
-	CreatedAt        string `json:"created_at"`
+	ID                  uint   `json:"id"`
+	OrderNo             string `json:"order_no"`
+	CommissionAmount    string `json:"commission_amount"`
+	RatePercent         string `json:"rate_percent"`
+	Status              string `json:"status"`
+	CreatedAt           string `json:"created_at"`
+	WithdrawalRequestID uint   `json:"withdraw_request_id"`
 }
 
 type AffiliateCommissionList struct {
@@ -60,6 +61,21 @@ type AffiliateWithdrawal struct {
 	Status       string `json:"status"`
 	RejectReason string `json:"reject_reason"`
 	CreatedAt    string `json:"created_at"`
+}
+
+type AffiliateWithdrawalRequest struct {
+	ChannelUserID string `json:"channel_user_id"`
+	Amount        string `json:"amount"`
+	Channel       string `json:"channel"`
+	Account       string `json:"account"`
+}
+
+func (c *Client) ApplyAffiliateWithdrawal(ctx context.Context, request AffiliateWithdrawalRequest) (AffiliateWithdrawal, error) {
+	result, err := post[AffiliateWithdrawal](ctx, c, "/affiliate/withdraws", request)
+	if err == nil && (result.ID == 0 || result.Amount != request.Amount || result.Channel != request.Channel || result.Account != request.Account || (result.Status != "pending_review" && result.Status != "paid" && result.Status != "rejected")) {
+		err = errors.New("incomplete or inconsistent affiliate withdrawal response")
+	}
+	return result, err
 }
 
 type AffiliateWithdrawalList struct {

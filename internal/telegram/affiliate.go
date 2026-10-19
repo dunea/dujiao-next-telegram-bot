@@ -14,6 +14,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
 // The server owns last-click attribution and its expiry. Do not retain a raw
@@ -109,8 +110,9 @@ func (a *App) showAffiliate(ctx context.Context, chatID, userID int64, edit bool
 		text += "\n" + tr(locale, "可用佣金：", "可用佣金：", "Available commission: ") + affiliateMoney(dashboard.AvailableCommission, currency)
 		text += "\n" + tr(locale, "已提现佣金：", "已提領佣金：", "Withdrawn commission: ") + affiliateMoney(dashboard.WithdrawnCommission, currency)
 		text += "\n" + tr(locale, "最低提现：", "最低提領：", "Minimum withdrawal: ") + affiliateMoney(dashboard.MinWithdrawAmount.String(), currency)
-		text += "\n\n" + tr(locale, "数据及归因以商店为准；自购、退款和结算规则由商店校验。当前支持查看提现记录，申请提现请前往商店或联系客服。", "資料與歸因以商店為準；自購、退款與結算規則由商店校驗。目前支援查看提領紀錄，申請提領請前往商店或聯絡客服。", "Attribution and figures come from the store, which validates self-purchases, refunds and settlement. Withdrawal history is available here; apply through the store or support.")
+		text += "\n\n" + tr(locale, "数据及归因以商店为准；自购、退款和结算规则由商店校验。提现申请需商店审核，不代表已打款。", "資料與歸因以商店為準；自購、退款與結算規則由商店校驗。提領申請需商店審核，不代表已匯款。", "Attribution and figures come from the store, which validates self-purchases, refunds and settlement. Withdrawal requests require merchant review and do not mean funds have been paid.")
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "佣金明细", "佣金明細", "Commissions"), CallbackData: "affcomm:1"}, {Text: tr(locale, "提现记录", "提領紀錄", "Withdrawals"), CallbackData: "affwithdraws:1"}})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "申请提现", "申請提領", "Request withdrawal"), CallbackData: "affapply"}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新", "重新整理", "Refresh"), CallbackData: "affiliate"}, {Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"}})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
@@ -175,7 +177,11 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 		pages = result.TotalPages
 		text = "<b>" + tr(locale, "佣金明细", "佣金明細", "Commissions") + "</b>"
 		for _, row := range result.Items[:min(len(result.Items), 5)] {
-			text += "\n\n<code>" + html.EscapeString(truncate(row.OrderNo, 32)) + "</code>\n" + affiliateMoney(row.CommissionAmount, currency) + " · " + affiliateStatus(locale, row.Status)
+			status := affiliateStatus(locale, row.Status)
+			if row.Status == "available" && row.WithdrawalRequestID > 0 {
+				status = tr(locale, "提现审核中（已冻结）", "提領審核中（已凍結）", "Reserved for withdrawal review")
+			}
+			text += "\n\n<code>" + html.EscapeString(truncate(row.OrderNo, 32)) + "</code>\n" + affiliateMoney(row.CommissionAmount, currency) + " · " + status
 			text += "\n" + tr(locale, "佣金比例：", "佣金比例：", "Rate: ") + html.EscapeString(truncate(row.RatePercent, 12)) + "%\n" + html.EscapeString(truncate(row.CreatedAt, 25))
 		}
 		if len(result.Items) == 0 {
@@ -207,6 +213,18 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 	}
 	if len(pager) > 0 {
 		rows = append(rows, pager)
+	}
+	if kind == "affwithdraws" {
+		state := a.sessions.Get(userID)
+		if guard := state.WithdrawalGuard; guard != nil && guard.Status == "unknown" {
+			text += "\n\n" + tr(locale, "⚠️ 上一笔申请结果不明。记录可能尚未更新，请联系商家核对；仅在确认可以重新申请后，才解除本地重试保护。解除保护不会撤回商店中的申请。", "⚠️ 上一筆申請結果不明。紀錄可能尚未更新，請聯絡商家核對；僅在確認可以重新申請後，才解除本機重試保護。解除保護不會撤回商店中的申請。", "⚠️ A previous request has an unknown result. History may be delayed. Contact the store and clear local retry protection only after verifying that you can apply again. This does not cancel a store-side request.")
+			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已核对，解除重试保护", "已核對，解除重試保護", "Reviewed; clear retry protection"), CallbackData: "wdack:" + guard.ID}})
+			a.sessions.Update(userID, func(state *session.State) {
+				if current := state.WithdrawalGuard; current != nil && current.ID == guard.ID && current.Status == "unknown" {
+					current.ReviewMessageID = messageID
+				}
+			})
+		}
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回推广中心", "‹ 返回推廣中心", "‹ Affiliate center"), CallbackData: "affiliate"}})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
@@ -246,6 +264,8 @@ func (a *App) affiliateFailure(ctx context.Context, chatID, userID int64, err er
 	var apiError *dujiao.APIError
 	if errors.As(err, &apiError) {
 		switch {
+		case apiError.ErrorCode == "affiliate_not_opened":
+			text = tr(locale, "请先在推广中心开通推广，再申请提现。", "請先在推廣中心開通推廣，再申請提領。", "Open your affiliate profile before requesting a withdrawal.")
 		case apiError.ErrorCode == "affiliate_disabled":
 			text = tr(locale, "商店暂未开启推广功能，请联系商家。", "商店暫未開啟推廣功能，請聯絡商家。", "The store has not enabled its affiliate program. Contact the store.")
 		case apiError.ErrorCode == "user_disabled":

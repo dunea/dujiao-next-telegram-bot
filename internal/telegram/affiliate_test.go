@@ -13,19 +13,25 @@ import (
 )
 
 type affiliateTestState struct {
-	mu             sync.Mutex
-	dashboard      dujiao.AffiliateDashboard
-	clicks         []dujiao.AffiliateClick
-	opens          []dujiao.TelegramIdentity
-	identities     []dujiao.TelegramIdentity
-	queries        []string
-	commissions    []dujiao.AffiliateCommission
-	withdrawals    []dujiao.AffiliateWithdrawal
-	failureCode    string
-	failureStatus  int
-	resolveMissing bool
-	inviteRequired bool
-	openStatus     string
+	mu                      sync.Mutex
+	dashboard               dujiao.AffiliateDashboard
+	clicks                  []dujiao.AffiliateClick
+	opens                   []dujiao.TelegramIdentity
+	identities              []dujiao.TelegramIdentity
+	queries                 []string
+	commissions             []dujiao.AffiliateCommission
+	withdrawals             []dujiao.AffiliateWithdrawal
+	failureCode             string
+	failureStatus           int
+	resolveMissing          bool
+	inviteRequired          bool
+	openStatus              string
+	withdrawalRequests      []dujiao.AffiliateWithdrawalRequest
+	withdrawalFailureCode   string
+	withdrawalFailureStatus int
+	withdrawalResponse      *dujiao.AffiliateWithdrawal
+	withdrawalStarted       chan struct{}
+	withdrawalRelease       chan struct{}
 }
 
 func (state *affiliateTestState) serveHTTP(t *testing.T, w http.ResponseWriter, r *http.Request) {
@@ -88,6 +94,38 @@ func (state *affiliateTestState) serveHTTP(t *testing.T, w http.ResponseWriter, 
 		end := min(start+5, len(state.commissions))
 		data = dujiao.AffiliateCommissionList{Items: state.commissions[start:end], Page: page, TotalPages: int64((len(state.commissions) + 4) / 5), Total: int64(len(state.commissions))}
 	case "/api/v1/channel/affiliate/withdraws":
+		if r.Method == http.MethodPost {
+			var request dujiao.AffiliateWithdrawalRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			state.withdrawalRequests = append(state.withdrawalRequests, request)
+			if state.withdrawalStarted != nil {
+				select {
+				case state.withdrawalStarted <- struct{}{}:
+				default:
+				}
+			}
+			if state.withdrawalRelease != nil {
+				<-state.withdrawalRelease
+			}
+			if state.withdrawalFailureCode != "" {
+				status := state.withdrawalFailureStatus
+				if status == 0 {
+					status = 400
+				}
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": status, "error_code": state.withdrawalFailureCode, "msg": "private account: " + request.Account})
+				return
+			}
+			row := dujiao.AffiliateWithdrawal{ID: uint(len(state.withdrawalRequests)), Amount: request.Amount, Channel: request.Channel, Account: request.Account, Status: "pending_review"}
+			if state.withdrawalResponse != nil {
+				row = *state.withdrawalResponse
+			}
+			state.withdrawals = append(state.withdrawals, row)
+			data = row
+			break
+		}
 		page := positiveAffiliateTestPage(r)
 		start := min((page-1)*5, len(state.withdrawals))
 		end := min(start+5, len(state.withdrawals))
@@ -113,7 +151,7 @@ func TestAffiliateOpenDashboardLinkAndAmounts(t *testing.T) {
 	}
 	formCallback(app, 42, 10, "affopen")
 	text := fixture.texts[len(fixture.texts)-1]
-	for _, want := range []string{"https://t.me/test_bot?start=aff_AFF42", "推广访问：20", "有效订单：3", "转化率：15.00%", "待确认佣金：1.25 CNY", "可用佣金：20.00 CNY", "最低提现：10.00 CNY", "申请提现请前往商店"} {
+	for _, want := range []string{"https://t.me/test_bot?start=aff_AFF42", "推广访问：20", "有效订单：3", "转化率：15.00%", "待确认佣金：1.25 CNY", "可用佣金：20.00 CNY", "最低提现：10.00 CNY", "提现申请需商店审核"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("dashboard missing %q: %s", want, text)
 		}

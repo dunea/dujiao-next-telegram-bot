@@ -15,6 +15,7 @@ import (
 
 func isolateDemoAffiliateState(t *testing.T) {
 	t.Helper()
+	t.Setenv("DEMO_AFFILIATE_SEED_COMMISSION", "")
 	demoAffiliateMu.Lock()
 	profiles, clicks := demoAffiliateProfiles, demoAffiliateClicks
 	demoAffiliateProfiles = map[string]*demoAffiliateProfile{}
@@ -152,7 +153,7 @@ func TestDemoAffiliateConcurrentOpenAndClickAreIdempotent(t *testing.T) {
 	}
 }
 
-func TestDemoAffiliatePaginationAndReadOnlyWithdrawals(t *testing.T) {
+func TestDemoAffiliatePaginationAndWithdrawalValidation(t *testing.T) {
 	isolateDemoAffiliateState(t)
 	openDemoAffiliate(t, "42")
 	demoAffiliateMu.Lock()
@@ -175,7 +176,7 @@ func TestDemoAffiliatePaginationAndReadOnlyWithdrawals(t *testing.T) {
 		method, path string
 		status       int
 	}{
-		{"GET", "/affiliate/open?channel_user_id=42", 405}, {"POST", "/affiliate/withdraws?channel_user_id=42", 405}, {"GET", "/affiliate/dashboard", 400}, {"GET", "/affiliate/dashboard?channel_user_id=-1", 400},
+		{"GET", "/affiliate/open?channel_user_id=42", 405}, {"POST", "/affiliate/withdraws?channel_user_id=42", 400}, {"GET", "/affiliate/dashboard", 400}, {"GET", "/affiliate/dashboard?channel_user_id=-1", 400},
 	} {
 		recorder := httptest.NewRecorder()
 		dujiaoHandler(recorder, httptest.NewRequest(test.method, "/api/v1/channel"+test.path, nil))
