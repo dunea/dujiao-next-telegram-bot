@@ -150,12 +150,14 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 			data = demoCreateOrder(request)
 		}
 	case "/payment-channels":
-		channelName := "演示在线支付"
+		channelName := "演示二维码支付"
+		interactionMode := "qr"
 		if request.URL.Query().Get("context") == "recharge" {
 			channelName = "演示即时到账"
+			interactionMode = "redirect"
 		}
 		data = map[string]any{"items": []map[string]any{
-			{"id": 1, "name": channelName, "provider_type": "demo", "channel_type": "web", "interaction_mode": "redirect", "fee_rate": "0.00", "fixed_fee": "0.00"},
+			{"id": 1, "name": channelName, "provider_type": "demo", "channel_type": "web", "interaction_mode": interactionMode, "fee_rate": "0.00", "fixed_fee": "0.00"},
 		}}
 	case "/payments":
 		data = demoCreatePayment(request)
@@ -326,33 +328,59 @@ func demoCreatePayment(request *http.Request) map[string]any {
 		UseBalance bool `json:"use_balance"`
 	}
 	_ = json.NewDecoder(request.Body).Decode(&payload)
+	if payload.UseBalance {
+		completeDemoOrder(payload.OrderID, true)
+	} else {
+		go func() {
+			time.Sleep(8 * time.Second)
+			completeDemoOrder(payload.OrderID, false)
+		}()
+	}
+	if payload.UseBalance {
+		return map[string]any{"order_paid": true, "order_id": payload.OrderID, "status": "success", "currency": "CNY"}
+	}
+	amount := demoOrderAmount(payload.OrderID)
+	return map[string]any{
+		"order_paid": false, "payment_id": payload.OrderID, "order_id": payload.OrderID,
+		"status": "pending", "channel_name": "演示二维码支付", "amount": amount, "currency": "CNY",
+		"interaction_mode": "qr", "qr_code": fmt.Sprintf("dujiao-demo://payment/%d", payload.OrderID),
+		"expires_at": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
+	}
+}
+
+func demoOrderAmount(orderID uint) string {
 	orderMu.Lock()
+	defer orderMu.Unlock()
 	for _, order := range demoOrders {
-		if order["order_id"] == payload.OrderID {
+		if order["order_id"] == orderID {
+			if amount, ok := order["total_amount"].(string); ok {
+				return amount
+			}
+		}
+	}
+	return "0.00"
+}
+
+func completeDemoOrder(orderID uint, useBalance bool) {
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	for _, order := range demoOrders {
+		if order["order_id"] == orderID && order["status"] == "pending_payment" {
 			order["status"] = "completed"
 			order["paid_amount"] = order["total_amount"]
 			order["paid_at"] = time.Now().UTC().Format(time.RFC3339)
 			order["fulfillment_status"] = "delivered"
 			order["fulfillment_result"] = map[string]any{
-				"license_key": fmt.Sprintf("DEMO-%06d-ABCD-EFGH", payload.OrderID),
+				"license_key": fmt.Sprintf("DEMO-%06d-ABCD-EFGH", orderID),
 				"note":        "这是演示交付内容，不可用于真实服务。",
 			}
 			order["fulfillment_instructions"] = "复制演示授权码后，在对应软件的激活页面中填写。"
-			if payload.UseBalance {
+			if useBalance {
 				order["wallet_paid_amount"] = order["total_amount"]
 			} else {
 				order["online_paid_amount"] = order["total_amount"]
 			}
 		}
-	}
-	orderMu.Unlock()
-	if payload.UseBalance {
-		return map[string]any{"order_paid": true, "order_id": payload.OrderID, "status": "succeeded", "currency": "CNY"}
-	}
-	return map[string]any{
-		"order_paid": false, "payment_id": payload.OrderID, "order_id": payload.OrderID,
-		"status": "pending", "channel_name": "演示在线支付", "amount": "9.90", "currency": "CNY",
-		"pay_url": "https://example.com/demo-payment",
 	}
 }
 

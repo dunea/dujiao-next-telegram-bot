@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,9 +33,18 @@ type App struct {
 	api      *dujiao.Client
 	sessions *session.Memory
 	logger   *slog.Logger
+	runCtx   context.Context
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
+	runCtxMu sync.RWMutex
+	pollMu   sync.Mutex
+	polls    map[uint]*activePaymentPoll
+}
+
+type activePaymentPoll struct {
+	cancel      context.CancelFunc
+	qrMessageID int
 }
 
 func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocale string, pollTimeout time.Duration, serverURL string, logger *slog.Logger) (*App, error) {
@@ -46,6 +56,8 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		sessions: session.NewMemory(defaultLocale),
 		logger:   logger,
 		config:   config,
+		runCtx:   context.Background(),
+		polls:    make(map[uint]*activePaymentPoll),
 	}
 	options := []tgbot.Option{
 		tgbot.WithWorkers(4),
@@ -65,6 +77,9 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 }
 
 func (a *App) Start(ctx context.Context) {
+	a.runCtxMu.Lock()
+	a.runCtx = ctx
+	a.runCtxMu.Unlock()
 	if _, err := a.bot.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{Commands: []models.BotCommand{
 		{Command: "start", Description: "打开商店 / Open store"},
 		{Command: "products", Description: "浏览商品 / Browse products"},
@@ -532,6 +547,128 @@ func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, us
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", orderID)}})
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	qrMessageID := a.sendPaymentQRCode(ctx, chatID, locale, result.QRCode, result.PayURL, result.InteractionMode, result.Amount, result.Currency)
+	a.startPaymentPoll(chatID, userID, orderID, messageID, qrMessageID, result.ExpiresAt)
+}
+
+func (a *App) sendPaymentQRCode(ctx context.Context, chatID int64, locale, qrCode, payURL, interactionMode, amount, currency string) int {
+	image, ok, err := buildPaymentQRImage(qrCode, payURL, interactionMode)
+	if err != nil {
+		a.logger.Warn("build payment QR code", "error", err)
+		return 0
+	}
+	if !ok {
+		return 0
+	}
+	caption := tr(locale, "请扫描二维码完成支付。", "請掃描二維碼完成付款。", "Scan the QR code to complete payment.")
+	if amount != "" {
+		caption += "\n" + tr(locale, "金额：", "金額：", "Amount: ") + html.EscapeString(amount+" "+currency)
+	}
+	var photo models.InputFile
+	if image.URL != "" {
+		photo = &models.InputFileString{Data: image.URL}
+	} else {
+		photo = &models.InputFileUpload{Filename: "payment-qr.png", Data: bytes.NewReader(image.Data)}
+	}
+	message, err := a.bot.SendPhoto(ctx, &tgbot.SendPhotoParams{
+		ChatID: chatID, Photo: photo, Caption: caption, ParseMode: models.ParseModeHTML,
+	})
+	if err != nil && image.URL != "" {
+		fallback, renderErr := renderQRCodePNG(image.URL)
+		if renderErr == nil {
+			message, err = a.bot.SendPhoto(ctx, &tgbot.SendPhotoParams{
+				ChatID:  chatID,
+				Photo:   &models.InputFileUpload{Filename: "payment-qr.png", Data: bytes.NewReader(fallback)},
+				Caption: caption, ParseMode: models.ParseModeHTML,
+			})
+		}
+	}
+	if err != nil {
+		a.logger.Warn("send payment QR code", "error", err)
+		return 0
+	}
+	return message.ID
+}
+
+func (a *App) startPaymentPoll(chatID, userID int64, orderID uint, messageID, qrMessageID int, expiresAt string) {
+	runCtx := a.runtimeContext()
+	pollCtx, cancel := context.WithCancel(runCtx)
+	poll := &activePaymentPoll{cancel: cancel, qrMessageID: qrMessageID}
+	a.pollMu.Lock()
+	previous := a.polls[orderID]
+	a.polls[orderID] = poll
+	a.pollMu.Unlock()
+	if previous != nil {
+		previous.cancel()
+		if previous.qrMessageID > 0 {
+			_, _ = a.bot.DeleteMessage(runCtx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: previous.qrMessageID})
+		}
+	}
+	go a.pollPayment(pollCtx, poll, chatID, userID, orderID, messageID, expiresAt)
+}
+
+func (a *App) runtimeContext() context.Context {
+	a.runCtxMu.RLock()
+	defer a.runCtxMu.RUnlock()
+	return a.runCtx
+}
+
+func (a *App) pollPayment(ctx context.Context, poll *activePaymentPoll, chatID, userID int64, orderID uint, messageID int, expiresAt string) {
+	defer func() {
+		poll.cancel()
+		a.pollMu.Lock()
+		if a.polls[orderID] == poll {
+			delete(a.polls, orderID)
+		}
+		a.pollMu.Unlock()
+	}()
+	deadline := time.Now().Add(15 * time.Minute)
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresAt)); err == nil && parsed.After(time.Now()) && parsed.Before(time.Now().Add(30*time.Minute)) {
+		deadline = parsed
+	}
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if time.Now().After(deadline) {
+				if poll.qrMessageID > 0 {
+					_, _ = a.bot.DeleteMessage(ctx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: poll.qrMessageID})
+				}
+				a.showOrder(ctx, chatID, messageID, userID, orderID)
+				return
+			}
+			locale := a.sessions.Get(userID).Locale
+			order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
+			if err != nil {
+				a.logger.Debug("poll payment status", "order_id", orderID, "error", err)
+				continue
+			}
+			if order.Status != "pending_payment" {
+				if poll.qrMessageID > 0 {
+					_, _ = a.bot.DeleteMessage(ctx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: poll.qrMessageID})
+				}
+				a.showOrder(ctx, chatID, messageID, userID, orderID)
+				return
+			}
+		}
+	}
+}
+
+func (a *App) stopPaymentPoll(ctx context.Context, chatID int64, orderID uint) {
+	a.pollMu.Lock()
+	poll := a.polls[orderID]
+	delete(a.polls, orderID)
+	a.pollMu.Unlock()
+	if poll == nil {
+		return
+	}
+	if poll.qrMessageID > 0 {
+		_, _ = a.bot.DeleteMessage(ctx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: poll.qrMessageID})
+	}
+	poll.cancel()
 }
 
 func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, edit bool, messageID int) {
@@ -672,6 +809,7 @@ func (a *App) cancelOrder(ctx context.Context, chatID int64, messageID int, user
 		a.edit(ctx, chatID, messageID, tr(locale, "订单无法取消，可能已支付、已取消或已过期。", "訂單無法取消，可能已付款、已取消或已過期。", "The order cannot be cancelled. It may already be paid, cancelled, or expired."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}}}})
 		return
 	}
+	a.stopPaymentPoll(ctx, chatID, orderID)
 	a.showOrder(ctx, chatID, messageID, userID, orderID)
 }
 
@@ -767,6 +905,7 @@ func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID 
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	a.sendPaymentQRCode(ctx, chatID, locale, result.Payment.QRCode, result.Payment.PayURL, result.Payment.InteractionMode, result.Payment.Amount, result.Payment.Currency)
 }
 
 func (a *App) showLanguage(ctx context.Context, chatID int64, edit bool, messageID int) {
