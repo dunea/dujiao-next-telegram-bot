@@ -21,9 +21,12 @@ var rechargeSequence atomic.Uint64
 var walletBalanceCents atomic.Int64
 var orderMu sync.Mutex
 var demoOrders []map[string]any
+var walletTransactionMu sync.Mutex
+var demoWalletTransactions []map[string]any
 
 func init() {
 	walletBalanceCents.Store(10_000)
+	recordWalletTransaction("admin_adjust", "in", 10_000, 10_000, "演示初始余额")
 }
 
 type demoSKU struct {
@@ -145,7 +148,7 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		data = demoOrderPreview(request)
 	case "/orders":
 		if request.Method == http.MethodGet {
-			data = demoOrderList()
+			data = demoOrderList(request)
 		} else {
 			data = demoCreateOrder(request)
 		}
@@ -163,6 +166,8 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		data = demoCreatePayment(request)
 	case "/wallet":
 		data = map[string]any{"balance": money(int(walletBalanceCents.Load())), "currency": "CNY"}
+	case "/wallet/transactions":
+		data = demoWalletTransactionList(request)
 	case "/wallet/recharge":
 		data = demoWalletRecharge(request)
 	default:
@@ -281,14 +286,28 @@ func demoCreateOrder(request *http.Request) map[string]any {
 	return result
 }
 
-func demoOrderList() map[string]any {
+func demoOrderList(request *http.Request) map[string]any {
+	status := request.URL.Query().Get("status")
+	page := positiveQueryInt(request, "page", 1)
+	pageSize := positiveQueryInt(request, "page_size", 5)
 	orderMu.Lock()
 	defer orderMu.Unlock()
-	items := make([]map[string]any, len(demoOrders))
-	for index, order := range demoOrders {
-		items[index] = cloneMap(order)
+	matching := make([]map[string]any, 0, len(demoOrders))
+	for _, order := range demoOrders {
+		if status != "" && order["status"] != status {
+			continue
+		}
+		matching = append(matching, cloneMap(order))
 	}
-	return map[string]any{"items": items, "total": len(items), "page": 1, "page_size": 5, "total_pages": pageCount(len(items), 5)}
+	start := (page - 1) * pageSize
+	if start > len(matching) {
+		start = len(matching)
+	}
+	end := min(start+pageSize, len(matching))
+	return map[string]any{
+		"items": matching[start:end], "total": len(matching), "page": page,
+		"page_size": pageSize, "total_pages": pageCount(len(matching), pageSize),
+	}
 }
 
 func demoOrderDetail(orderID uint) map[string]any {
@@ -366,6 +385,7 @@ func completeDemoOrder(orderID uint, useBalance bool) {
 	defer orderMu.Unlock()
 	for _, order := range demoOrders {
 		if order["order_id"] == orderID && order["status"] == "pending_payment" {
+			amount, _ := order["total_amount"].(string)
 			order["status"] = "completed"
 			order["paid_amount"] = order["total_amount"]
 			order["paid_at"] = time.Now().UTC().Format(time.RFC3339)
@@ -377,6 +397,9 @@ func completeDemoOrder(orderID uint, useBalance bool) {
 			order["fulfillment_instructions"] = "复制演示授权码后，在对应软件的激活页面中填写。"
 			if useBalance {
 				order["wallet_paid_amount"] = order["total_amount"]
+				amountCents := moneyToCents(amount)
+				balanceAfter := walletBalanceCents.Add(-amountCents)
+				recordWalletTransaction("order_pay", "out", amountCents, balanceAfter, fmt.Sprintf("订单 %v", order["order_no"]))
 			} else {
 				order["online_paid_amount"] = order["total_amount"]
 			}
@@ -391,8 +414,9 @@ func demoWalletRecharge(request *http.Request) map[string]any {
 	}
 	_ = json.NewDecoder(request.Body).Decode(&payload)
 	id := rechargeSequence.Add(1)
-	amount, _ := strconv.ParseFloat(payload.Amount, 64)
-	walletBalanceCents.Add(int64(amount*100 + 0.5))
+	amountCents := moneyToCents(payload.Amount)
+	balanceAfter := walletBalanceCents.Add(amountCents)
+	recordWalletTransaction("recharge", "in", amountCents, balanceAfter, fmt.Sprintf("演示充值 RECHARGE%06d", id))
 	return map[string]any{
 		"recharge_no": fmt.Sprintf("RECHARGE%06d", id),
 		"payment": map[string]any{
@@ -401,6 +425,50 @@ func demoWalletRecharge(request *http.Request) map[string]any {
 			"expires_at": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
 		},
 	}
+}
+
+func demoWalletTransactionList(request *http.Request) map[string]any {
+	page := positiveQueryInt(request, "page", 1)
+	pageSize := positiveQueryInt(request, "page_size", 5)
+	walletTransactionMu.Lock()
+	defer walletTransactionMu.Unlock()
+	start := (page - 1) * pageSize
+	if start > len(demoWalletTransactions) {
+		start = len(demoWalletTransactions)
+	}
+	end := min(start+pageSize, len(demoWalletTransactions))
+	items := make([]map[string]any, 0, end-start)
+	for _, transaction := range demoWalletTransactions[start:end] {
+		items = append(items, cloneMap(transaction))
+	}
+	return map[string]any{
+		"items": items, "total": len(demoWalletTransactions), "page": page,
+		"page_size": pageSize, "total_pages": pageCount(len(demoWalletTransactions), pageSize),
+	}
+}
+
+func recordWalletTransaction(transactionType, direction string, amountCents, balanceAfterCents int64, remark string) {
+	transaction := map[string]any{
+		"type": transactionType, "direction": direction, "amount": money(int(amountCents)),
+		"balance_after": money(int(balanceAfterCents)), "remark": remark,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	walletTransactionMu.Lock()
+	demoWalletTransactions = append([]map[string]any{transaction}, demoWalletTransactions...)
+	walletTransactionMu.Unlock()
+}
+
+func moneyToCents(value string) int64 {
+	amount, _ := strconv.ParseFloat(value, 64)
+	return int64(amount*100 + 0.5)
+}
+
+func positiveQueryInt(request *http.Request, key string, fallback int) int {
+	value, err := strconv.Atoi(request.URL.Query().Get(key))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 type orderItem struct {

@@ -288,6 +288,23 @@ type Wallet struct {
 	Currency string `json:"currency"`
 }
 
+type WalletTransaction struct {
+	Type         string `json:"type"`
+	Direction    string `json:"direction"`
+	Amount       string `json:"amount"`
+	BalanceAfter string `json:"balance_after"`
+	Remark       string `json:"remark"`
+	CreatedAt    string `json:"created_at"`
+}
+
+type WalletTransactionList struct {
+	Items      []WalletTransaction `json:"items"`
+	Page       int                 `json:"page"`
+	PageSize   int                 `json:"page_size"`
+	Total      int64               `json:"total"`
+	TotalPages int64               `json:"total_pages"`
+}
+
 type WalletRechargeResult struct {
 	RechargeNo string                `json:"recharge_no"`
 	Payment    WalletRechargePayment `json:"payment"`

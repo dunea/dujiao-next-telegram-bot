@@ -75,3 +75,23 @@ func TestFormatFulfillmentPayload(t *testing.T) {
 		t.Fatalf("nil payload = %q", got)
 	}
 }
+
+func TestOrderFilterRoundTrip(t *testing.T) {
+	for status, code := range map[string]string{"": "a", "pending_payment": "p", "completed": "c"} {
+		if got := orderFilterCode(status); got != code {
+			t.Errorf("orderFilterCode(%q) = %q, want %q", status, got, code)
+		}
+		if got := orderFilterStatus(code); got != status {
+			t.Errorf("orderFilterStatus(%q) = %q, want %q", code, got, status)
+		}
+	}
+}
+
+func TestWalletTransactionPresentation(t *testing.T) {
+	if got := walletTransactionSign("out"); got != "−" {
+		t.Fatalf("out sign = %q", got)
+	}
+	if got := walletTransactionType("en-US", "gift_card_redeem"); got != "Gift card redemption" {
+		t.Fatalf("type label = %q", got)
+	}
+}

@@ -147,7 +147,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	case "/products":
 		a.showCategories(ctx, message.Chat.ID, message.From, false, 0)
 	case "/orders":
-		a.showOrders(ctx, message.Chat.ID, message.From.ID, 1, false, 0)
+		a.showOrders(ctx, message.Chat.ID, message.From.ID, "", 1, false, 0)
 	case "/wallet":
 		a.showWallet(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/recharge":
@@ -274,11 +274,15 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			a.createPayment(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID), uint(channelID), useBalance)
 		}
 	case "orders":
+		status := ""
 		page := 1
 		if len(parts) == 2 {
 			page, _ = strconv.Atoi(parts[1])
+		} else if len(parts) == 3 {
+			status = orderFilterStatus(parts[1])
+			page, _ = strconv.Atoi(parts[2])
 		}
-		a.showOrders(ctx, message.Chat.ID, query.From.ID, page, true, message.ID)
+		a.showOrders(ctx, message.Chat.ID, query.From.ID, status, page, true, message.ID)
 	case "order":
 		if len(parts) == 2 {
 			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
@@ -301,6 +305,12 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		}
 	case "wallet":
 		a.showWallet(ctx, message.Chat.ID, query.From.ID, true, message.ID)
+	case "walletlog":
+		page := 1
+		if len(parts) == 2 {
+			page, _ = strconv.Atoi(parts[1])
+		}
+		a.showWalletTransactions(ctx, message.Chat.ID, query.From.ID, page, true, message.ID)
 	case "recharge":
 		a.askRechargeAmount(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "rechargepay":
@@ -671,12 +681,12 @@ func (a *App) stopPaymentPoll(ctx context.Context, chatID int64, orderID uint) {
 	poll.cancel()
 }
 
-func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, edit bool, messageID int) {
+func (a *App) showOrders(ctx context.Context, chatID, userID int64, status string, page int, edit bool, messageID int) {
 	if page < 1 {
 		page = 1
 	}
 	locale := a.sessions.Get(userID).Locale
-	orders, err := a.api.Orders(ctx, strconv.FormatInt(userID, 10), locale, page, 5)
+	orders, err := a.api.Orders(ctx, strconv.FormatInt(userID, 10), locale, status, page, 5)
 	if err != nil {
 		a.apiFailure(ctx, chatID, locale, "list orders", err)
 		return
@@ -691,7 +701,19 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, ed
 	if len(orders.Items) == 0 {
 		text += "\n\n" + tr(locale, "还没有订单。", "尚無訂單。", "No orders yet.")
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(orders.Items)+2)
+	rows := make([][]models.InlineKeyboardButton, 0, len(orders.Items)+3)
+	filterCode := orderFilterCode(status)
+	filterButton := func(label, code string) models.InlineKeyboardButton {
+		if filterCode == code {
+			label = "✓ " + label
+		}
+		return models.InlineKeyboardButton{Text: label, CallbackData: "orders:" + code + ":1"}
+	}
+	rows = append(rows, []models.InlineKeyboardButton{
+		filterButton(tr(locale, "全部", "全部", "All"), "a"),
+		filterButton(tr(locale, "待支付", "待付款", "Pending"), "p"),
+		filterButton(tr(locale, "已完成", "已完成", "Completed"), "c"),
+	})
 	for _, order := range orders.Items {
 		label := order.ProductTitle
 		if label == "" {
@@ -702,10 +724,10 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, page int, ed
 	}
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
-		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("orders:%d", page-1)})
+		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page-1)})
 	}
 	if int64(page) < orders.TotalPages {
-		pager = append(pager, models.InlineKeyboardButton{Text: "›", CallbackData: fmt.Sprintf("orders:%d", page+1)})
+		pager = append(pager, models.InlineKeyboardButton{Text: "›", CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page+1)})
 	}
 	if len(pager) > 0 {
 		rows = append(rows, pager)
@@ -824,9 +846,51 @@ func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, m
 	text += html.EscapeString(wallet.Balance + " " + wallet.Currency)
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "➕ 充值", "➕ 儲值", "➕ Recharge"), CallbackData: "recharge"}},
+		{{Text: tr(locale, "📒 交易流水", "📒 交易明細", "📒 Transactions"), CallbackData: "walletlog:1"}},
 		{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}},
 	}}
 	a.sendOrEdit(ctx, chatID, messageID, text, keyboard, edit)
+}
+
+func (a *App) showWalletTransactions(ctx context.Context, chatID, userID int64, page int, edit bool, messageID int) {
+	if page < 1 {
+		page = 1
+	}
+	locale := a.sessions.Get(userID).Locale
+	transactions, err := a.api.WalletTransactions(ctx, strconv.FormatInt(userID, 10), page, 5)
+	if err != nil {
+		a.apiFailure(ctx, chatID, locale, "list wallet transactions", err)
+		return
+	}
+	text := "<b>" + tr(locale, "钱包交易流水", "錢包交易明細", "Wallet transactions") + "</b>"
+	for _, transaction := range transactions.Items {
+		sign := walletTransactionSign(transaction.Direction)
+		text += "\n\n<b>" + html.EscapeString(walletTransactionType(locale, transaction.Type)) + "</b>"
+		text += "\n" + html.EscapeString(sign+transaction.Amount)
+		text += " · " + tr(locale, "余额 ", "餘額 ", "Balance ") + html.EscapeString(transaction.BalanceAfter)
+		if transaction.Remark != "" {
+			text += "\n" + html.EscapeString(truncate(transaction.Remark, 100))
+		}
+		if transaction.CreatedAt != "" {
+			text += "\n<code>" + html.EscapeString(transaction.CreatedAt) + "</code>"
+		}
+	}
+	if len(transactions.Items) == 0 {
+		text += "\n\n" + tr(locale, "还没有交易流水。", "尚無交易明細。", "No transactions yet.")
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, 2)
+	var pager []models.InlineKeyboardButton
+	if page > 1 {
+		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("walletlog:%d", page-1)})
+	}
+	if int64(page) < transactions.TotalPages {
+		pager = append(pager, models.InlineKeyboardButton{Text: "›", CallbackData: fmt.Sprintf("walletlog:%d", page+1)})
+	}
+	if len(pager) > 0 {
+		rows = append(rows, pager)
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
+	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
 func (a *App) askRechargeAmount(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
@@ -1155,6 +1219,61 @@ func orderStatus(locale, status string) string {
 	values, ok := statuses[status]
 	if !ok {
 		return status
+	}
+	switch locale {
+	case "zh-TW":
+		return values[1]
+	case "en-US":
+		return values[2]
+	default:
+		return values[0]
+	}
+}
+
+func orderFilterStatus(code string) string {
+	switch code {
+	case "p":
+		return "pending_payment"
+	case "c":
+		return "completed"
+	default:
+		return ""
+	}
+}
+
+func orderFilterCode(status string) string {
+	switch status {
+	case "pending_payment":
+		return "p"
+	case "completed":
+		return "c"
+	default:
+		return "a"
+	}
+}
+
+func walletTransactionSign(direction string) string {
+	switch strings.ToLower(direction) {
+	case "out", "debit":
+		return "−"
+	default:
+		return "+"
+	}
+}
+
+func walletTransactionType(locale, transactionType string) string {
+	types := map[string][3]string{
+		"recharge":               {"余额充值", "餘額儲值", "Recharge"},
+		"order_pay":              {"订单支付", "訂單付款", "Order payment"},
+		"order_refund":           {"订单退款", "訂單退款", "Order refund"},
+		"admin_refund":           {"管理员退款", "管理員退款", "Admin refund"},
+		"admin_adjust":           {"管理员调账", "管理員調帳", "Admin adjustment"},
+		"gift_card_redeem":       {"礼品卡兑换", "禮品卡兌換", "Gift card redemption"},
+		"order_underpaid_credit": {"订单收款不足转入", "訂單收款不足轉入", "Underpaid order credit"},
+	}
+	values, ok := types[transactionType]
+	if !ok {
+		return transactionType
 	}
 	switch locale {
 	case "zh-TW":

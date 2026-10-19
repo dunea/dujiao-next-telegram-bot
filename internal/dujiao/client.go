@@ -110,13 +110,17 @@ func (c *Client) CreateOrder(ctx context.Context, request OrderRequest) (OrderCr
 	return post[OrderCreated](ctx, c, "/orders", request)
 }
 
-func (c *Client) Orders(ctx context.Context, channelUserID, locale string, page, pageSize int) (OrderList, error) {
-	return get[OrderList](ctx, c, "/orders", url.Values{
+func (c *Client) Orders(ctx context.Context, channelUserID, locale, status string, page, pageSize int) (OrderList, error) {
+	query := url.Values{
 		"channel_user_id": {channelUserID},
 		"locale":          {locale},
 		"page":            {strconv.Itoa(page)},
 		"page_size":       {strconv.Itoa(pageSize)},
-	})
+	}
+	if status != "" {
+		query.Set("status", status)
+	}
+	return get[OrderList](ctx, c, "/orders", query)
 }
 
 func (c *Client) Order(ctx context.Context, channelUserID, locale string, orderID uint) (OrderDetail, error) {
@@ -135,6 +139,14 @@ func (c *Client) CancelOrder(ctx context.Context, channelUserID string, orderID 
 
 func (c *Client) Wallet(ctx context.Context, channelUserID string) (Wallet, error) {
 	return get[Wallet](ctx, c, "/wallet", url.Values{"channel_user_id": {channelUserID}})
+}
+
+func (c *Client) WalletTransactions(ctx context.Context, channelUserID string, page, pageSize int) (WalletTransactionList, error) {
+	return get[WalletTransactionList](ctx, c, "/wallet/transactions", url.Values{
+		"channel_user_id": {channelUserID},
+		"page":            {strconv.Itoa(page)},
+		"page_size":       {strconv.Itoa(pageSize)},
+	})
 }
 
 func (c *Client) RechargeChannels(ctx context.Context) (PaymentChannelList, error) {

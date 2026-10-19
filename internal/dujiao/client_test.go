@@ -139,6 +139,56 @@ func TestClientGetsOrderDetail(t *testing.T) {
 	}
 }
 
+func TestClientFiltersOrders(t *testing.T) {
+	client, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		if request.URL.Path != "/api/v1/channel/orders" || query.Get("status") != "pending_payment" {
+			t.Errorf("request = %s?%s", request.URL.Path, request.URL.RawQuery)
+		}
+		if query.Get("page") != "2" || query.Get("page_size") != "5" {
+			t.Errorf("pagination = %q", request.URL.RawQuery)
+		}
+		response := `{"status_code":0,"msg":"success","data":{"items":[],"page":2,"page_size":5,"total":6,"total_pages":2}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	orders, err := client.Orders(context.Background(), "42", "zh-CN", "pending_payment", 2, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orders.Page != 2 || orders.TotalPages != 2 {
+		t.Fatalf("orders = %#v", orders)
+	}
+}
+
+func TestClientListsWalletTransactions(t *testing.T) {
+	client, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		query := request.URL.Query()
+		if request.URL.Path != "/api/v1/channel/wallet/transactions" || query.Get("channel_user_id") != "42" {
+			t.Errorf("request = %s?%s", request.URL.Path, request.URL.RawQuery)
+		}
+		if query.Get("page") != "1" || query.Get("page_size") != "5" {
+			t.Errorf("pagination = %q", request.URL.RawQuery)
+		}
+		response := `{"status_code":0,"msg":"success","data":{"items":[{"type":"recharge","direction":"in","amount":"50.00","balance_after":"150.00","remark":"test","created_at":"2026-10-19T00:00:00Z"}],"page":1,"page_size":5,"total":1,"total_pages":1}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	transactions, err := client.WalletTransactions(context.Background(), "42", 1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transactions.Items) != 1 || transactions.Items[0].BalanceAfter != "150.00" {
+		t.Fatalf("transactions = %#v", transactions)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
