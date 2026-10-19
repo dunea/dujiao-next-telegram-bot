@@ -295,6 +295,22 @@ type Wallet struct {
 	Currency string `json:"currency"`
 }
 
+type GiftCard struct {
+	ID       uint   `json:"id"`
+	Name     string `json:"name"`
+	Code     string `json:"code"`
+	Amount   string `json:"amount"`
+	Currency string `json:"currency"`
+	Status   string `json:"status"`
+}
+
+type GiftCardRedemption struct {
+	GiftCard    GiftCard          `json:"gift_card"`
+	Wallet      Wallet            `json:"wallet"`
+	Transaction WalletTransaction `json:"transaction"`
+	WalletDelta string            `json:"wallet_delta"`
+}
+
 type WalletTransaction struct {
 	Type         string `json:"type"`
 	Direction    string `json:"direction"`

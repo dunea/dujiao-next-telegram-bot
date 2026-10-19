@@ -14,6 +14,16 @@ type State struct {
 	Locale   string
 	Flow     string
 	Purchase *PurchaseDraft
+	GiftCard *GiftCardInput
+}
+
+// GiftCardInput holds prompt metadata, never the gift card code.
+type GiftCardInput struct {
+	ID         string
+	ChatID     int64
+	PromptID   int
+	ExpiresAt  time.Time
+	Submitting bool
 }
 
 type PurchaseDraft struct {
@@ -37,6 +47,10 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.GiftCard != nil {
+		input := *state.GiftCard
+		state.GiftCard = &input
+	}
 	if state.Purchase == nil {
 		return state
 	}
@@ -82,6 +96,13 @@ func NewMemory(defaultLocale string) *Memory {
 func (m *Memory) Get(userID int64) State {
 	m.mu.Lock()
 	state, ok := m.users[userID]
+	if state.GiftCard != nil && !time.Now().Before(state.GiftCard.ExpiresAt) {
+		state.GiftCard = nil
+		if state.Flow == "gift_card" {
+			state.Flow = ""
+		}
+		m.users[userID] = state
+	}
 	if state.Purchase != nil && !time.Now().Before(state.Purchase.ExpiresAt) {
 		state.Purchase = nil
 		if state.Flow == "manual_form" || state.Flow == "coupon_code" {
@@ -111,5 +132,5 @@ func (m *Memory) Update(userID int64, update func(*State)) State {
 }
 
 func (m *Memory) ResetFlow(userID int64) {
-	m.Update(userID, func(state *State) { state.Flow = ""; state.Purchase = nil })
+	m.Update(userID, func(state *State) { state.Flow = ""; state.Purchase = nil; state.GiftCard = nil })
 }

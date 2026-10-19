@@ -203,6 +203,9 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		data = demoWalletTransactionList(request)
 	case "/wallet/recharge":
 		data = demoWalletRecharge(request)
+	case "/wallet/gift-card/redeem":
+		demoRedeemGiftCard(w, request)
+		return
 	default:
 		if strings.HasPrefix(path, "/catalog/products/") {
 			id, _ := strconv.ParseUint(strings.TrimPrefix(path, "/catalog/products/"), 10, 64)

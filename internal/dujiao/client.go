@@ -141,6 +141,14 @@ func (c *Client) Wallet(ctx context.Context, channelUserID string) (Wallet, erro
 	return get[Wallet](ctx, c, "/wallet", url.Values{"channel_user_id": {channelUserID}})
 }
 
+func (c *Client) RedeemGiftCard(ctx context.Context, channelUserID, code string) (GiftCardRedemption, error) {
+	result, err := post[GiftCardRedemption](ctx, c, "/wallet/gift-card/redeem", map[string]any{"channel_user_id": channelUserID, "code": code})
+	if err == nil && (result.GiftCard.Status != "redeemed" || result.WalletDelta == "" || result.Wallet.Balance == "" || result.GiftCard.Currency == "") {
+		err = errors.New("incomplete gift card redemption response")
+	}
+	return result, err
+}
+
 func (c *Client) WalletTransactions(ctx context.Context, channelUserID string, page, pageSize int) (WalletTransactionList, error) {
 	return get[WalletTransactionList](ctx, c, "/wallet/transactions", url.Values{
 		"channel_user_id": {channelUserID},

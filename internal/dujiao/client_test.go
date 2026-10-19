@@ -114,6 +114,46 @@ func TestClientCreatesWalletRecharge(t *testing.T) {
 	}
 }
 
+func TestClientRedeemsGiftCard(t *testing.T) {
+	const timestamp = int64(1700000000)
+	client, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now = func() time.Time { return time.Unix(timestamp, 0) }
+	client.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/channel/wallet/gift-card/redeem" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["channel_user_id"] != "42" || payload["code"] != "GIFT50" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		if !Verify("secret", request.Method, request.URL.Path, timestamp, body, request.Header.Get("Dujiao-Next-Channel-Signature")) {
+			t.Fatal("invalid redemption signature")
+		}
+		response := `{"status_code":0,"data":{"gift_card":{"id":7,"amount":"50.00","currency":"CNY","status":"redeemed"},"wallet":{"balance":"150.00"},"wallet_delta":"50.00","transaction":{"type":"gift_card_redeem","direction":"in","amount":"50.00","balance_after":"150.00"}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+	result, err := client.RedeemGiftCard(context.Background(), "42", "GIFT50")
+	if err != nil || result.WalletDelta != "50.00" || result.Wallet.Balance != "150.00" || result.Transaction.Type != "gift_card_redeem" {
+		t.Fatalf("redemption = %#v, %v", result, err)
+	}
+	client.http.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status_code":0,"data":{}}`))}, nil
+	})
+	if _, err := client.RedeemGiftCard(context.Background(), "42", "GIFT50"); err == nil {
+		t.Fatal("incomplete response was accepted as a redemption")
+	}
+}
+
 func TestClientGetsOrderDetail(t *testing.T) {
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/channel/orders/23" {

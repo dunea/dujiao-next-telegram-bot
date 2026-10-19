@@ -40,3 +40,20 @@ func TestPurchaseDraftIsolationAndExpiry(t *testing.T) {
 		t.Fatalf("expired draft retained: %#v", state)
 	}
 }
+
+func TestGiftCardPromptIsolationAndExpiry(t *testing.T) {
+	store := NewMemory("zh-CN")
+	input := &GiftCardInput{ID: "prompt", ChatID: 42, PromptID: 7, ExpiresAt: time.Now().Add(time.Minute)}
+	returned := store.Update(42, func(state *State) { state.Flow = "gift_card"; state.GiftCard = input })
+	input.PromptID = 99
+	returned.GiftCard.PromptID = 98
+	read := store.Get(42)
+	read.GiftCard.PromptID = 97
+	if store.Get(42).GiftCard.PromptID != 7 {
+		t.Fatal("gift card prompt shared mutable state")
+	}
+	store.Update(42, func(state *State) { state.GiftCard.ExpiresAt = time.Now().Add(-time.Second) })
+	if state := store.Get(42); state.GiftCard != nil || state.Flow != "" {
+		t.Fatal("expired gift card input retained")
+	}
+}

@@ -31,6 +31,8 @@ type formFixture struct {
 	couponExpired        bool
 	rejectCouponOnCreate bool
 	couponTotal          string
+	giftCodes            []string
+	giftFailureCode      string
 	nextID               atomic.Int64
 }
 
@@ -67,6 +69,35 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 		}
 		var data any
 		switch r.URL.Path {
+		case "/api/v1/channel/wallet/gift-card/redeem":
+			var request struct {
+				ChannelUserID string `json:"channel_user_id"`
+				Code          string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			if request.ChannelUserID != "42" {
+				t.Errorf("gift card user = %q", request.ChannelUserID)
+			}
+			fixture.mu.Lock()
+			fixture.giftCodes = append(fixture.giftCodes, request.Code)
+			failure := fixture.giftFailureCode
+			fixture.mu.Unlock()
+			if failure != "" {
+				status := http.StatusBadRequest
+				if failure == "gift_card_not_found" {
+					status = http.StatusNotFound
+				}
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": status, "error_code": failure, "msg": "untrusted server text: " + request.Code})
+				return
+			}
+			data = dujiao.GiftCardRedemption{GiftCard: dujiao.GiftCard{Amount: "50.00", Currency: "CNY", Status: "redeemed"}, Wallet: dujiao.Wallet{Balance: "150.00"}, WalletDelta: "50.00", Transaction: dujiao.WalletTransaction{Type: "gift_card_redeem", Direction: "in", Amount: "50.00", BalanceAfter: "150.00"}}
+		case "/api/v1/channel/wallet":
+			data = dujiao.Wallet{Balance: "150.00", Currency: "CNY"}
+		case "/api/v1/channel/wallet/transactions":
+			data = dujiao.WalletTransactionList{Items: []dujiao.WalletTransaction{{Type: "gift_card_redeem", Direction: "in", Amount: "50.00", BalanceAfter: "150.00"}}, Page: 1, PageSize: 5, Total: 1, TotalPages: 1}
 		case "/api/v1/channel/catalog/products/3":
 			fixture.mu.Lock()
 			data = fixture.product

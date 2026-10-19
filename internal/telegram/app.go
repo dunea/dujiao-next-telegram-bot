@@ -86,6 +86,7 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "orders", Description: "我的订单 / My orders"},
 		{Command: "wallet", Description: "账户余额 / Wallet"},
 		{Command: "recharge", Description: "钱包充值 / Recharge"},
+		{Command: "redeem", Description: "礼品卡兑换 / Redeem gift card"},
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
 		{Command: "cancel", Description: "取消当前操作 / Cancel"},
@@ -134,7 +135,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	state := a.sessions.Get(message.From.ID)
 	navigating := false
 	switch command {
-	case "/start", "/products", "/orders", "/wallet", "/recharge", "/language", "/help", "/cancel":
+	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/language", "/help", "/cancel":
 		navigating = true
 	}
 	if state.Flow == "manual_form" && !navigating {
@@ -145,7 +146,11 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleCouponMessage(ctx, message)
 		return
 	}
-	if navigating && state.Purchase != nil {
+	if state.Flow == "gift_card" && !navigating {
+		a.handleGiftCardMessage(ctx, message)
+		return
+	}
+	if navigating && (state.Purchase != nil || state.GiftCard != nil) {
 		a.sessions.ResetFlow(message.From.ID)
 	}
 	if state.Flow == "invite" && !strings.HasPrefix(message.Text, "/") {
@@ -168,6 +173,8 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.showWallet(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/recharge":
 		a.askRechargeAmount(ctx, message.Chat.ID, message.From.ID, false, 0)
+	case "/redeem":
+		a.askGiftCard(ctx, message.Chat.ID, message.From.ID)
 	case "/language":
 		a.showLanguage(ctx, message.Chat.ID, false, 0)
 	case "/help":
@@ -347,6 +354,8 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.showWalletTransactions(ctx, message.Chat.ID, query.From.ID, page, true, message.ID)
 	case "recharge":
 		a.askRechargeAmount(ctx, message.Chat.ID, query.From.ID, true, message.ID)
+	case "giftcard":
+		a.askGiftCard(ctx, message.Chat.ID, query.From.ID)
 	case "rechargepay":
 		if len(parts) == 3 {
 			channelID, _ := strconv.ParseUint(parts[1], 10, 64)
@@ -1036,6 +1045,7 @@ func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, m
 	text += html.EscapeString(wallet.Balance + " " + wallet.Currency)
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "➕ 充值", "➕ 儲值", "➕ Recharge"), CallbackData: "recharge"}},
+		{{Text: tr(locale, "🎁 礼品卡兑换", "🎁 禮品卡兌換", "🎁 Redeem gift card"), CallbackData: "giftcard"}},
 		{{Text: tr(locale, "📒 交易流水", "📒 交易明細", "📒 Transactions"), CallbackData: "walletlog:1"}},
 		{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}},
 	}}
