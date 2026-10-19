@@ -31,6 +31,10 @@ const (
 	Access            Action  = "access"
 	Callback          Action  = "callback.ingress"
 	AdminTest         Action  = "admin.test"
+	BroadcastDraft    Action  = "broadcast.draft"
+	BroadcastJob      Action  = "broadcast.job"
+	BroadcastDelivery Action  = "broadcast.delivery"
+	Subscription      Action  = "broadcast.subscription"
 	Attempt           Outcome = "attempt"
 	Succeeded         Outcome = "succeeded"
 	Rejected          Outcome = "rejected"
@@ -38,6 +42,11 @@ const (
 	Blocked           Outcome = "blocked"
 	Limited           Outcome = "rate_limited"
 	Unavailable       Outcome = "unavailable"
+	Paused            Outcome = "paused"
+	Cancelled         Outcome = "cancelled"
+	Skipped           Outcome = "skipped"
+	Subscribed        Outcome = "subscribed"
+	Unsubscribed      Outcome = "unsubscribed"
 )
 
 type Event struct {
@@ -53,12 +62,12 @@ type Event struct {
 // accepted into the event: upstream and user-controlled strings cannot leak.
 func (e Event) valid() bool {
 	switch e.Action {
-	case Order, Payment, OrderCancel, Recharge, GiftCard, Affiliate, Withdrawal, WithdrawalUnlock, CallbackPaid, CallbackFulfilled, CallbackRecharge, Session, Access, Callback, AdminTest:
+	case Order, Payment, OrderCancel, Recharge, GiftCard, Affiliate, Withdrawal, WithdrawalUnlock, CallbackPaid, CallbackFulfilled, CallbackRecharge, Session, Access, Callback, AdminTest, BroadcastDraft, BroadcastJob, BroadcastDelivery, Subscription:
 	default:
 		return false
 	}
 	switch e.Outcome {
-	case Attempt, Succeeded, Rejected, Unknown, Blocked, Limited, Unavailable:
+	case Attempt, Succeeded, Rejected, Unknown, Blocked, Limited, Unavailable, Paused, Cancelled, Skipped, Subscribed, Unsubscribed:
 	default:
 		return false
 	}
@@ -141,6 +150,9 @@ func (s *Service) Record(event Event) {
 }
 
 func notify(event Event) bool {
+	if event.Action == BroadcastJob {
+		return event.Outcome == Succeeded || event.Outcome == Unknown
+	}
 	if event.Action == AdminTest {
 		return event.Outcome == Succeeded
 	}
@@ -148,6 +160,19 @@ func notify(event Event) bool {
 		return event.Outcome == Succeeded || event.Outcome == Unknown || event.Outcome == Unavailable
 	}
 	return (event.Action == Order || event.Action == CallbackPaid || event.Action == CallbackFulfilled || event.Action == CallbackRecharge) && event.Outcome == Succeeded
+}
+
+// Campaign IDs are generated opaque base32 tokens, not announcement contents.
+func (s *Service) RecordBroadcast(action Action, outcome Outcome, uid int64, id string) {
+	if len(id) != 26 {
+		return
+	}
+	for _, r := range id {
+		if (r < 'A' || r > 'Z') && (r < '2' || r > '7') {
+			return
+		}
+	}
+	s.Record(Event{id: id, Action: action, Outcome: outcome, UserID: uid})
 }
 
 func (s *Service) deliveryAudit(event Event, outcome string, adminID int64) {

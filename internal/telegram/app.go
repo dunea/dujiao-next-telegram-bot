@@ -19,6 +19,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
@@ -30,14 +31,17 @@ import (
 const pageSize = 8
 
 type App struct {
-	bot      *tgbot.Bot
-	api      *dujiao.Client
-	sessions session.Store
-	logger   *slog.Logger
-	runCtx   context.Context
-	ops      *operations.Service
-	limiter  ratelimit.Limiter
-	limits   ratelimit.Policy
+	bot             *tgbot.Bot
+	api             *dujiao.Client
+	sessions        session.Store
+	logger          *slog.Logger
+	runCtx          context.Context
+	ops             *operations.Service
+	limiter         ratelimit.Limiter
+	limits          ratelimit.Policy
+	broadcastStore  broadcast.Store
+	broadcastEngine *broadcast.Engine
+	broadcastMax    int
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
@@ -92,6 +96,9 @@ func (a *App) Start(ctx context.Context) {
 	notificationsDone := make(chan struct{})
 	go func() { defer close(notificationsDone); a.ops.Run(notificationCtx) }()
 	defer func() { stopNotifications(); <-notificationsDone }()
+	broadcastDone := make(chan struct{})
+	go func() { defer close(broadcastDone); a.broadcastEngine.Run(notificationCtx) }()
+	defer func() { stopNotifications(); <-broadcastDone }()
 	if _, err := a.bot.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{Commands: []models.BotCommand{
 		{Command: "start", Description: "打开商店 / Open store"},
 		{Command: "products", Description: "浏览商品 / Browse products"},
@@ -103,6 +110,8 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
 		{Command: "whoami", Description: "查看 Telegram 用户 ID / My ID"},
+		{Command: "subscribe", Description: "订阅商店公告 / Subscribe"},
+		{Command: "unsubscribe", Description: "退订公告（保留订单通知）/ Unsubscribe"},
 		{Command: "cancel", Description: "取消当前操作 / Cancel"},
 	}}); err != nil {
 		a.logger.Warn("set Telegram commands", "error", err)
@@ -153,7 +162,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	}
 	message := update.Message
 	command, argument := parseCommand(message.Text)
-	if !a.allowIngress(ctx, message.Chat.ID, message.From.ID, command == "/cancel") {
+	if !a.allowIngress(ctx, message.Chat.ID, message.From.ID, command == "/cancel" || command == "/unsubscribe") {
+		return
+	}
+	if a.handleBroadcastCommand(ctx, message, command) {
 		return
 	}
 	if command == "/whoami" {
@@ -168,11 +180,14 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 			return
 		}
 		a.ops.Record(operations.Event{Action: operations.AdminTest, Outcome: operations.Succeeded, UserID: message.From.ID})
-		a.send(ctx, message.Chat.ID, "管理员测试已记录（重复事件可能合并）；发送结果请查看审计日志。", nil)
+		a.send(ctx, message.Chat.ID, "管理员测试已记录（重复事件可能合并）；发送结果请查看审计日志。\n轻量群发：/broadcast\n群发进度与停止：/broadcast_status", nil)
 		return
 	}
 	state := a.sessions.Get(message.From.ID)
 	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
+		return
+	}
+	if a.handleBroadcastInput(ctx, message, command) {
 		return
 	}
 	navigating := false
@@ -331,6 +346,18 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		return
 	}
 	_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
+	if strings.HasPrefix(query.Data, "bc:") || query.Data == "bcunsubscribe" || query.Data == "bcsubscribe" || query.Data == "bcsubscriptions" || strings.HasPrefix(query.Data, "bcjob:") {
+		a.handleBroadcastCallback(ctx, query)
+		return
+	}
+	if message.Chat.ID == query.From.ID && a.ops.IsAdmin(query.From.ID) && query.Data != "none" && query.Data != "noop" {
+		// Switching back to shopping invalidates announcement drafts, so an
+		// old final-confirmation message cannot outlive that navigation.
+		if _, err := a.broadcastStore.Update(ctx, func(s *broadcast.State) error { delete(s.Drafts, query.From.ID); return nil }); err != nil {
+			a.broadcastFailure(ctx, query.From.ID, err)
+			return
+		}
+	}
 	state := a.sessions.Get(query.From.ID)
 	if !a.sessionOK(ctx, message.Chat.ID, state.Err) {
 		return
@@ -1294,6 +1321,7 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 	if safeHTTPURL(config.Basic.SupportURL) {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: config.Basic.SupportURL}})
 	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📣 公告订阅", "📣 公告訂閱", "📣 Announcements"), CallbackData: "bcsubscriptions"}})
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 

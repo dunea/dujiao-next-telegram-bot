@@ -14,21 +14,23 @@ import (
 )
 
 type Config struct {
-	DujiaoBaseURL        string
-	DujiaoChannelKey     string
-	DujiaoChannelSecret  string
-	TelegramBotToken     string
-	TelegramAPIURL       string
-	DefaultLocale        string
-	PollTimeout          time.Duration
-	HTTPListen           string
-	ShutdownTimeout      time.Duration
-	LogLevel             string
-	RedisURL             string
-	SessionEncryptionKey string
-	AdminUserIDs         []int64
-	AuditFile            string
-	RatePolicy           ratelimit.Policy
+	DujiaoBaseURL          string
+	DujiaoChannelKey       string
+	DujiaoChannelSecret    string
+	TelegramBotToken       string
+	TelegramAPIURL         string
+	DefaultLocale          string
+	PollTimeout            time.Duration
+	HTTPListen             string
+	ShutdownTimeout        time.Duration
+	LogLevel               string
+	RedisURL               string
+	SessionEncryptionKey   string
+	AdminUserIDs           []int64
+	AuditFile              string
+	RatePolicy             ratelimit.Policy
+	BroadcastInterval      time.Duration
+	BroadcastMaxRecipients int
 }
 
 func Load() (Config, error) {
@@ -47,6 +49,20 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if cfg.BroadcastInterval, err = durationEnv("BOT_BROADCAST_INTERVAL", time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.BroadcastInterval < time.Second || cfg.BroadcastInterval > 10*time.Second {
+		return Config{}, errors.New("BOT_BROADCAST_INTERVAL must be between 1s and 10s")
+	}
+	cfg.BroadcastMaxRecipients = 1000
+	if raw := strings.TrimSpace(os.Getenv("BOT_BROADCAST_MAX_RECIPIENTS")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 5000 {
+			return Config{}, errors.New("BOT_BROADCAST_MAX_RECIPIENTS must be between 1 and 5000")
+		}
+		cfg.BroadcastMaxRecipients = value
+	}
 	if cfg.AdminUserIDs, err = operations.ParseAdminIDs(os.Getenv("BOT_ADMIN_USER_IDS")); err != nil {
 		return Config{}, err
 	}

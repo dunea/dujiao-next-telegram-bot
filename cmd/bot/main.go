@@ -86,6 +86,7 @@ func run() error {
 	}
 	// Audit INFO records remain enabled even when application logs use WARN/ERROR.
 	app.ConfigureOperations(cfg.AdminUserIDs, cfg.RatePolicy, slog.New(slog.NewJSONHandler(auditWriter, nil)))
+	app.ConfigureBroadcast(cfg.BroadcastInterval, cfg.BroadcastMaxRecipients)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

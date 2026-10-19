@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 )
 
@@ -142,6 +143,7 @@ func cloneState(state State) State {
 }
 
 type Memory struct {
+	broadcast     *broadcast.Memory
 	mu            sync.RWMutex
 	defaultLocale string
 	users         map[int64]State

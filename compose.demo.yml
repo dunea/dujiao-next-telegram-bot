@@ -36,6 +36,8 @@ services:
       BOT_POLL_TIMEOUT: 30s
       BOT_LOG_LEVEL: info
       BOT_ADMIN_USER_IDS: ${BOT_ADMIN_USER_IDS:-}
+      BOT_BROADCAST_INTERVAL: ${BOT_BROADCAST_INTERVAL:-1s}
+      BOT_BROADCAST_MAX_RECIPIENTS: ${BOT_BROADCAST_MAX_RECIPIENTS:-1000}
       BOT_AUDIT_FILE: /var/lib/dujiao-bot/audit.jsonl
       BOT_REDIS_URL: redis://redis:6379/0
       # DEMO ONLY: never use this public encryption key for a real shop.

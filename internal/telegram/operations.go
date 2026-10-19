@@ -26,6 +26,7 @@ func (a *App) ConfigureOperations(adminIDs []int64, policy ratelimit.Policy, aud
 		_, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: uid, Text: text})
 		return err
 	})
+	a.initBroadcast()
 }
 
 func (a *App) CallbackOptions() callback.Options {
@@ -58,7 +59,7 @@ func (a *App) allowIngress(ctx context.Context, chatID, uid int64, cancel bool) 
 }
 
 func (a *App) allowCallbackIngress(ctx context.Context, query *models.CallbackQuery) bool {
-	if a.allowIngress(ctx, query.Message.Message.Chat.ID, query.From.ID, false) {
+	if a.allowIngress(ctx, query.Message.Message.Chat.ID, query.From.ID, query.Data == "bcunsubscribe") {
 		return true
 	}
 	// Never respond to floods with sendMessage (which could create another flood).

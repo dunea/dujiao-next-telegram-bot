@@ -1,6 +1,37 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestBroadcastConfigValidation(t *testing.T) {
+	t.Setenv("DUJIAO_BASE_URL", "https://shop.example.com")
+	t.Setenv("DUJIAO_CHANNEL_KEY", "key")
+	t.Setenv("DUJIAO_CHANNEL_SECRET", "secret")
+	t.Setenv("BOT_BROADCAST_INTERVAL", "")
+	t.Setenv("BOT_BROADCAST_MAX_RECIPIENTS", "")
+	if cfg, err := Load(); err != nil || cfg.BroadcastInterval != time.Second || cfg.BroadcastMaxRecipients != 1000 {
+		t.Fatal("broadcast defaults", cfg, err)
+	}
+	for _, value := range []string{"0s", "999ms", "11s", "NaN"} {
+		t.Setenv("BOT_BROADCAST_INTERVAL", value)
+		if _, err := Load(); err == nil {
+			t.Fatal("unsafe interval", value)
+		}
+	}
+	t.Setenv("BOT_BROADCAST_INTERVAL", "2s")
+	for _, value := range []string{"0", "5001", "NaN"} {
+		t.Setenv("BOT_BROADCAST_MAX_RECIPIENTS", value)
+		if _, err := Load(); err == nil {
+			t.Fatal("unsafe audience limit", value)
+		}
+	}
+	t.Setenv("BOT_BROADCAST_MAX_RECIPIENTS", "50")
+	if cfg, err := Load(); err != nil || cfg.BroadcastInterval != 2*time.Second || cfg.BroadcastMaxRecipients != 50 {
+		t.Fatal("valid broadcast settings", err)
+	}
+}
 
 func TestLoadRequiresDujiaoCredentials(t *testing.T) {
 	t.Setenv("DUJIAO_BASE_URL", "")
