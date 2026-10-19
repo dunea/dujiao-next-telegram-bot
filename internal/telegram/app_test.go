@@ -44,3 +44,24 @@ func TestConfiguredMenuRowsHonorsEnabledItems(t *testing.T) {
 		t.Fatalf("rows = %#v", rows)
 	}
 }
+
+func TestNormalizeMoneyInput(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{input: "50", want: "50.00", ok: true},
+		{input: " 12.5 ", want: "12.50", ok: true},
+		{input: "0", ok: false},
+		{input: "1.234", ok: false},
+		{input: "abc", ok: false},
+		{input: "1000001", ok: false},
+	}
+	for _, test := range tests {
+		got, ok := normalizeMoneyInput(test.input)
+		if got != test.want || ok != test.ok {
+			t.Errorf("normalizeMoneyInput(%q) = %q, %v; want %q, %v", test.input, got, ok, test.want, test.ok)
+		}
+	}
+}

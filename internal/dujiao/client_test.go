@@ -68,6 +68,52 @@ func TestClientReturnsAPIError(t *testing.T) {
 	}
 }
 
+func TestClientCreatesWalletRecharge(t *testing.T) {
+	const timestamp = int64(1700000000)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost {
+			t.Errorf("method = %q", request.Method)
+		}
+		if request.URL.Path != "/api/v1/channel/wallet/recharge" {
+			t.Errorf("path = %q", request.URL.Path)
+		}
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			ChannelUserID string `json:"channel_user_id"`
+			Amount        string `json:"amount"`
+			ChannelID     uint   `json:"channel_id"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ChannelUserID != "42" || payload.Amount != "50.00" || payload.ChannelID != 7 {
+			t.Errorf("payload = %#v", payload)
+		}
+		if !Verify("secret", http.MethodPost, request.URL.Path, timestamp, body, request.Header.Get("Dujiao-Next-Channel-Signature")) {
+			t.Error("invalid request signature")
+		}
+		response := `{"status_code":0,"msg":"success","data":{"recharge_no":"WR001","payment":{"id":9,"amount":"50.00","currency":"CNY","status":"pending","pay_url":"https://pay.example.test/WR001"}}}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+	})
+
+	client, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now = func() time.Time { return time.Unix(timestamp, 0) }
+	client.http.Transport = transport
+	result, err := client.CreateWalletRecharge(context.Background(), "42", "50.00", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RechargeNo != "WR001" || result.Payment.ID != 9 || result.Payment.Status != "pending" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

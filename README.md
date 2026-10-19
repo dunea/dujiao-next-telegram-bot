@@ -14,13 +14,13 @@
 - 商品分类、分页列表、商品详情和 SKU 选择
 - 无自定义表单商品的订单预览与创建
 - 余额或在线支付渠道选择、支付链接展示
-- 我的订单、钱包余额
+- 我的订单、钱包余额与钱包充值
 - 订单支付、交付、钱包充值成功的签名回调通知
 - Dujiao-Next 远端机器人配置定时刷新与心跳
 - 长轮询运行，不要求 Telegram Webhook 或公网 HTTPS
 - Docker Compose 部署和 `/healthz` 健康检查
 
-暂不支持需要填写自定义表单的商品、优惠券输入、礼品卡、分销、钱包充值发起和后台群发。这些可以在后续版本逐步补充。
+暂不支持需要填写自定义表单的商品、优惠券输入、礼品卡、分销和后台群发。这些可以在后续版本逐步补充。
 
 ## 环境要求
 
@@ -92,6 +92,7 @@ go test ./...
 - `/products` 浏览商品
 - `/orders` 查看订单
 - `/wallet` 查看余额
+- `/recharge` 发起钱包充值
 - `/language` 切换语言
 - `/help` 查看帮助
 - `/cancel` 取消邀请码输入等当前操作
@@ -109,6 +110,21 @@ go test ./...
 make test
 make lint
 make build
+```
+
+### 本地 Telegram 演示商店
+
+在 `.env` 中只填写 `TELEGRAM_BOT_TOKEN`，即可用内置演示商品启动真实 Telegram Bot；演示充值会即时到账，不会产生真实付款：
+
+```bash
+make demo-up
+docker compose -f compose.demo.yml logs -f bot
+```
+
+演示栈的健康端点为 `http://127.0.0.1:19444/healthz`。测试结束后运行：
+
+```bash
+make demo-down
 ```
 
 ### Docker 集成测试与压测

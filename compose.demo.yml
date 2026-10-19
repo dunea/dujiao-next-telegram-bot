@@ -1,0 +1,34 @@
+name: dujiao-bot-demo
+
+services:
+  demo-store:
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  bot:
+    build: .
+    environment:
+      DUJIAO_BASE_URL: http://demo-store:8080
+      DUJIAO_CHANNEL_KEY: demo-key
+      DUJIAO_CHANNEL_SECRET: demo-secret
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?Set TELEGRAM_BOT_TOKEN in .env}
+      TELEGRAM_API_URL: ""
+      BOT_HTTP_LISTEN: :8444
+      BOT_POLL_TIMEOUT: 30s
+      BOT_LOG_LEVEL: info
+    ports:
+      - "19444:8444"
+    depends_on:
+      demo-store:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8444/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15

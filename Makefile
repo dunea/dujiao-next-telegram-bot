@@ -1,4 +1,4 @@
-.PHONY: build test lint run integration-up integration-down loadtest
+.PHONY: build test lint run integration-up integration-down demo-up demo-down loadtest
 
 build:
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
@@ -17,6 +17,12 @@ integration-up:
 
 integration-down:
 	docker compose -f compose.test.yml down -v
+
+demo-up:
+	docker compose -f compose.demo.yml up -d --build --wait
+
+demo-down:
+	docker compose -f compose.demo.yml down -v
 
 loadtest:
 	go run ./cmd/loadtest -mode health -n 2000 -c 50

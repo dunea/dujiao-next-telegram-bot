@@ -123,6 +123,18 @@ func (c *Client) Wallet(ctx context.Context, channelUserID string) (Wallet, erro
 	return get[Wallet](ctx, c, "/wallet", url.Values{"channel_user_id": {channelUserID}})
 }
 
+func (c *Client) RechargeChannels(ctx context.Context) (PaymentChannelList, error) {
+	return get[PaymentChannelList](ctx, c, "/payment-channels", url.Values{"context": {"recharge"}})
+}
+
+func (c *Client) CreateWalletRecharge(ctx context.Context, channelUserID, amount string, channelID uint) (WalletRechargeResult, error) {
+	return post[WalletRechargeResult](ctx, c, "/wallet/recharge", map[string]any{
+		"channel_user_id": channelUserID,
+		"amount":          amount,
+		"channel_id":      channelID,
+	})
+}
+
 func (c *Client) PaymentChannels(ctx context.Context, channelUserID, orderNo string) (PaymentChannelList, error) {
 	query := url.Values{"channel_user_id": {channelUserID}}
 	if orderNo != "" {

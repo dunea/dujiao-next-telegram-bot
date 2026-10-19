@@ -231,6 +231,27 @@ type Wallet struct {
 	Currency string `json:"currency"`
 }
 
+type WalletRechargeResult struct {
+	RechargeNo string                `json:"recharge_no"`
+	Payment    WalletRechargePayment `json:"payment"`
+}
+
+type WalletRechargePayment struct {
+	ID              uint   `json:"id"`
+	Amount          string `json:"amount"`
+	FeeAmount       string `json:"fee_amount"`
+	Currency        string `json:"currency"`
+	Status          string `json:"status"`
+	InteractionMode string `json:"interaction_mode"`
+	PayURL          string `json:"pay_url"`
+	QRCode          string `json:"qr_code"`
+	WalletAddress   string `json:"wallet_address"`
+	ChainAmount     string `json:"chain_amount"`
+	Chain           string `json:"chain"`
+	TokenID         string `json:"token_id"`
+	ExpiresAt       string `json:"expires_at"`
+}
+
 type PaymentChannel struct {
 	ID              uint   `json:"id"`
 	Name            string `json:"name"`

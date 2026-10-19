@@ -7,6 +7,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ import (
 )
 
 const pageSize = 8
+
+var moneyInputPattern = regexp.MustCompile(`^[0-9]{1,7}(\.[0-9]{1,2})?$`)
 
 type App struct {
 	bot      *tgbot.Bot
@@ -66,6 +69,7 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "products", Description: "浏览商品 / Browse products"},
 		{Command: "orders", Description: "我的订单 / My orders"},
 		{Command: "wallet", Description: "账户余额 / Wallet"},
+		{Command: "recharge", Description: "钱包充值 / Recharge"},
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
 		{Command: "cancel", Description: "取消当前操作 / Cancel"},
@@ -115,6 +119,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.finishInvite(ctx, message, strings.TrimSpace(message.Text))
 		return
 	}
+	if state.Flow == "recharge_amount" && !strings.HasPrefix(message.Text, "/") {
+		a.handleRechargeAmount(ctx, message)
+		return
+	}
 
 	command, argument := parseCommand(message.Text)
 	switch command {
@@ -126,6 +134,8 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.showOrders(ctx, message.Chat.ID, message.From.ID, 1, false, 0)
 	case "/wallet":
 		a.showWallet(ctx, message.Chat.ID, message.From.ID, false, 0)
+	case "/recharge":
+		a.askRechargeAmount(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/language":
 		a.showLanguage(ctx, message.Chat.ID, false, 0)
 	case "/help":
@@ -255,6 +265,13 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.showOrders(ctx, message.Chat.ID, query.From.ID, page, true, message.ID)
 	case "wallet":
 		a.showWallet(ctx, message.Chat.ID, query.From.ID, true, message.ID)
+	case "recharge":
+		a.askRechargeAmount(ctx, message.Chat.ID, query.From.ID, true, message.ID)
+	case "rechargepay":
+		if len(parts) == 3 {
+			channelID, _ := strconv.ParseUint(parts[1], 10, 64)
+			a.createWalletRecharge(ctx, message.Chat.ID, message.ID, query.From.ID, parts[2], uint(channelID))
+		}
 	case "lang":
 		a.showLanguage(ctx, message.Chat.ID, true, message.ID)
 	case "setlang":
@@ -534,7 +551,89 @@ func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, m
 	}
 	text := "<b>" + tr(locale, "账户余额", "帳戶餘額", "Wallet balance") + "</b>\n\n"
 	text += html.EscapeString(wallet.Balance + " " + wallet.Currency)
+	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: tr(locale, "➕ 充值", "➕ 儲值", "➕ Recharge"), CallbackData: "recharge"}},
+		{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}},
+	}}
+	a.sendOrEdit(ctx, chatID, messageID, text, keyboard, edit)
+}
+
+func (a *App) askRechargeAmount(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
+	locale := a.sessions.Get(userID).Locale
+	a.sessions.Update(userID, func(state *session.State) { state.Flow = "recharge_amount" })
+	text := tr(locale,
+		"请输入充值金额，例如 <code>50</code> 或 <code>100.00</code>。发送 /cancel 取消。",
+		"請輸入儲值金額，例如 <code>50</code> 或 <code>100.00</code>。傳送 /cancel 取消。",
+		"Enter the recharge amount, for example <code>50</code> or <code>100.00</code>. Send /cancel to cancel.")
 	a.sendOrEdit(ctx, chatID, messageID, text, a.backKeyboard(locale), edit)
+}
+
+func (a *App) handleRechargeAmount(ctx context.Context, message *models.Message) {
+	locale := a.sessions.Get(message.From.ID).Locale
+	amount, ok := normalizeMoneyInput(message.Text)
+	if !ok {
+		a.send(ctx, message.Chat.ID, tr(locale,
+			"金额格式不正确，请输入大于 0、最多两位小数的金额。",
+			"金額格式不正確，請輸入大於 0、最多兩位小數的金額。",
+			"Invalid amount. Enter a value greater than zero with no more than two decimal places."), nil)
+		return
+	}
+	channels, err := a.api.RechargeChannels(ctx)
+	if err != nil {
+		a.apiFailure(ctx, message.Chat.ID, locale, "list recharge channels", err)
+		return
+	}
+	if len(channels.Items) == 0 {
+		a.send(ctx, message.Chat.ID, tr(locale, "商店暂未配置钱包充值渠道。", "商店暫未設定錢包儲值管道。", "No wallet recharge channel is configured."), a.backKeyboard(locale))
+		return
+	}
+	a.sessions.ResetFlow(message.From.ID)
+	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+1)
+	for _, channel := range channels.Items {
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: channel.Name, CallbackData: fmt.Sprintf("rechargepay:%d:%s", channel.ID, amount),
+		}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
+	text := tr(locale, "充值金额：", "儲值金額：", "Recharge amount: ") + "<b>" + html.EscapeString(amount) + "</b>\n\n"
+	text += tr(locale, "请选择支付渠道：", "請選擇付款管道：", "Choose a payment channel:")
+	a.send(ctx, message.Chat.ID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID int, userID int64, amount string, channelID uint) {
+	locale := a.sessions.Get(userID).Locale
+	result, err := a.api.CreateWalletRecharge(ctx, strconv.FormatInt(userID, 10), amount, channelID)
+	if err != nil {
+		a.logger.Error("create wallet recharge", "user_id", userID, "error", err)
+		a.edit(ctx, chatID, messageID, tr(locale, "创建充值订单失败，请稍后重试。", "建立儲值訂單失敗，請稍後再試。", "Could not create the recharge. Please try again later."), a.backKeyboard(locale))
+		return
+	}
+	if result.Payment.Status == "success" || result.Payment.Status == "succeeded" || result.Payment.Status == "paid" {
+		text := "✅ " + tr(locale, "充值成功，余额已更新。", "儲值成功，餘額已更新。", "Recharge succeeded. Your balance has been updated.")
+		keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: tr(locale, "查看余额", "查看餘額", "View balance"), CallbackData: "wallet"}},
+		}}
+		a.edit(ctx, chatID, messageID, text, keyboard)
+		return
+	}
+	text := "<b>" + tr(locale, "充值订单已创建", "儲值訂單已建立", "Recharge created") + "</b>\n\n"
+	text += tr(locale, "充值单号：", "儲值單號：", "Recharge: ") + "<code>" + html.EscapeString(result.RechargeNo) + "</code>"
+	text += "\n" + tr(locale, "金额：", "金額：", "Amount: ") + html.EscapeString(result.Payment.Amount+" "+result.Payment.Currency)
+	if result.Payment.FeeAmount != "" && result.Payment.FeeAmount != "0.00" {
+		text += "\n" + tr(locale, "手续费：", "手續費：", "Fee: ") + html.EscapeString(result.Payment.FeeAmount+" "+result.Payment.Currency)
+	}
+	if result.Payment.WalletAddress != "" {
+		text += "\n" + tr(locale, "收款地址：", "收款地址：", "Address: ") + "<code>" + html.EscapeString(result.Payment.WalletAddress) + "</code>"
+	}
+	if result.Payment.ChainAmount != "" {
+		text += "\n" + tr(locale, "链上金额：", "鏈上金額：", "On-chain amount: ") + "<code>" + html.EscapeString(result.Payment.ChainAmount) + "</code>"
+	}
+	rows := make([][]models.InlineKeyboardButton, 0, 2)
+	if safeHTTPURL(result.Payment.PayURL) {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "前往支付", "前往付款", "Pay now"), URL: result.Payment.PayURL}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
+	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (a *App) showLanguage(ctx context.Context, chatID int64, edit bool, messageID int) {
@@ -741,6 +840,18 @@ func truncate(value string, maxRunes int) string {
 		return value
 	}
 	return string(runes[:maxRunes-1]) + "…"
+}
+
+func normalizeMoneyInput(input string) (string, bool) {
+	input = strings.TrimSpace(input)
+	if !moneyInputPattern.MatchString(input) {
+		return "", false
+	}
+	value, err := strconv.ParseFloat(input, 64)
+	if err != nil || value <= 0 || value > 1_000_000 {
+		return "", false
+	}
+	return fmt.Sprintf("%.2f", value), true
 }
 
 func orderStatus(locale, status string) string {
