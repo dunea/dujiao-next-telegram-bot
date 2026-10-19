@@ -42,7 +42,7 @@ func TestCompatibilityVersionContracts(t *testing.T) {
 						fmt.Fprint(w, `{"status_code":500,"error_code":"internal_error"}`)
 						return
 					}
-					fmt.Fprint(w, `{"status_code":0,"data":{"bound":true,"created":true,"user_id":42}}`)
+					fmt.Fprint(w, `{"status_code":0,"data":{"bound":true,"created":true,"user":{"id":42,"display_name":"Synthetic"}}}`)
 				case "/api/v1/channel/wallet":
 					fmt.Fprint(w, `{"status_code":0,"data":{"balance":"150.00","currency":"CNY","new_optional_field":123}}`)
 				case "/api/v1/channel/affiliate/dashboard":
@@ -79,7 +79,7 @@ func TestCompatibilityVersionContracts(t *testing.T) {
 			}
 			identity, err := client.ProvisionIdentity(context.Background(), dujiao.TelegramIdentity{ChannelUserID: "42", InviteCode: "JOIN"})
 			if version.ChannelInviteCode {
-				if err != nil || !identity.Bound {
+				if err != nil || !identity.Bound || identity.UserID != 42 {
 					t.Fatal("invite-capable profile failed", err)
 				}
 			} else {

@@ -84,6 +84,35 @@ type IdentityResult struct {
 	WalletBalance string `json:"wallet_balance"`
 }
 
+// UnmarshalJSON accepts the real Channel API's nested user response while
+// retaining the flat fields used by older adapters. A present nested user is
+// authoritative; never combine an ID from one shape with another user's data.
+func (r *IdentityResult) UnmarshalJSON(data []byte) error {
+	type flat IdentityResult
+	var wire struct {
+		flat
+		User *struct {
+			ID          uint   `json:"id"`
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+			Locale      string `json:"locale"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = IdentityResult(wire.flat)
+	if wire.User != nil {
+		r.UserID = wire.User.ID
+		r.Email = wire.User.Email
+		r.Nickname = wire.User.DisplayName
+		r.Locale = wire.User.Locale
+		r.MemberLevel = ""
+		r.WalletBalance = ""
+	}
+	return nil
+}
+
 type Category struct {
 	ID           uint   `json:"id"`
 	ParentID     uint   `json:"parent_id"`
@@ -289,6 +318,40 @@ type OrderCancelled struct {
 	OrderNo     string `json:"order_no"`
 	Status      string `json:"status"`
 	CancelledAt string `json:"cancelled_at"`
+}
+
+// The official Channel API uses canceled_at (one l). Retain support for older
+// adapters using cancelled_at without changing the public Go field name.
+func (o *OrderCancelled) UnmarshalJSON(data []byte) error {
+	type alias OrderCancelled
+	var wire struct {
+		alias
+		CanceledAt *string `json:"canceled_at"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*o = OrderCancelled(wire.alias)
+	if wire.CanceledAt != nil {
+		o.CancelledAt = *wire.CanceledAt
+	}
+	return nil
+}
+
+func (o *OrderDetail) UnmarshalJSON(data []byte) error {
+	type alias OrderDetail
+	var wire struct {
+		alias
+		CanceledAt *string `json:"canceled_at"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*o = OrderDetail(wire.alias)
+	if wire.CanceledAt != nil {
+		o.CancelledAt = *wire.CanceledAt
+	}
+	return nil
 }
 
 type Wallet struct {

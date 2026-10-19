@@ -36,10 +36,15 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Check maintenance script syntax
-        run: sh -n scripts/acceptance.sh scripts/package-release.sh scripts/test-upgrade.sh
+        run: sh -n scripts/acceptance.sh scripts/package-release.sh scripts/test-upgrade.sh scripts/test-real-upstream.sh
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags realdujiao ./integration/realdujiao
+
+      - name: Check offline real-backend release pins
+        run: go test -tags realdujiao ./integration/realdujiao -run '^TestReleasePins$' -count=1
 
       - name: Test with race detector
         run: go test -race -coverprofile=coverage.out ./...
@@ -100,3 +105,37 @@ jobs:
 
       - name: Build integration image
         run: docker build --file Dockerfile.integration --tag dujiao-next-telegram-bot-mock:ci .
+
+  real-upstream:
+    name: Real Dujiao-Next upgrade (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install SQLite CLI
+        if: matrix.database == 'sqlite'
+        run: sudo apt-get update && sudo apt-get install --yes sqlite3
+      - name: Run pinned real backends and database upgrade chain
+        shell: bash
+        env:
+          DUJIAO_REAL_DB: ${{ matrix.database }}
+        run: sh scripts/test-real-upstream.sh | tee real-upstream-${{ matrix.database }}.log
+      - name: Preserve sanitized test result only
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: real-upstream-${{ matrix.database }}
+          path: real-upstream-${{ matrix.database }}.log
+          if-no-files-found: ignore
+          retention-days: 14
+          # Never upload temporary configs, databases, dumps or backend logs.

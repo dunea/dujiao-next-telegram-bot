@@ -1584,6 +1584,7 @@ func orderStatus(locale, status string) string {
 		"processing":      {"处理中", "處理中", "Processing"},
 		"completed":       {"已完成", "已完成", "Completed"},
 		"cancelled":       {"已取消", "已取消", "Cancelled"},
+		"canceled":        {"已取消", "已取消", "Cancelled"},
 		"refunded":        {"已退款", "已退款", "Refunded"},
 	}
 	values, ok := statuses[status]

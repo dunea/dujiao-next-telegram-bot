@@ -1,4 +1,4 @@
-.PHONY: build test lint verify acceptance compatibility upstream-audit upgrade-test release run integration-up integration-down demo-up demo-down loadtest
+.PHONY: build test lint verify acceptance compatibility upstream-audit upgrade-test real-upstream-test release run integration-up integration-down demo-up demo-down loadtest
 
 build:
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
@@ -11,9 +11,11 @@ lint:
 	go vet ./...
 
 verify:
-	test -z "$$(gofmt -l cmd internal)"
+	test -z "$$(gofmt -l cmd internal integration)"
 	go mod verify
 	go vet ./...
+	go vet -tags realdujiao ./integration/realdujiao
+	go test -tags realdujiao ./integration/realdujiao -run '^TestReleasePins$$' -count=1
 	go test -race -count=3 ./...
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
 	go build -trimpath -o dist/dujiao-compatcheck ./cmd/compatcheck
@@ -29,6 +31,9 @@ upstream-audit:
 
 upgrade-test:
 	sh scripts/test-upgrade.sh
+
+real-upstream-test:
+	sh scripts/test-real-upstream.sh
 
 release:
 	sh scripts/package-release.sh
