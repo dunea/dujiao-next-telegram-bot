@@ -35,6 +35,9 @@ jobs:
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
 
+      - name: Check maintenance script syntax
+        run: sh -n scripts/acceptance.sh scripts/package-release.sh
+
       - name: Vet
         run: go vet ./...
 
@@ -43,6 +46,9 @@ jobs:
 
       - name: Build binary
         run: go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
+
+      - name: Check offline version command
+        run: dist/dujiao-next-telegram-bot --version
 
       - name: Verify real Redis AOF restart recovery
         env:

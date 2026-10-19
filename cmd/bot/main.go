@@ -22,13 +22,25 @@ import (
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
 
-const version = "0.4.0-dev"
+const version = "0.4.0"
 
 func main() {
-	if err := run(); err != nil {
+	if err := command(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// Version checks must work before loading credentials or making network calls.
+func command(args []string, output io.Writer) error {
+	if len(args) == 0 {
+		return run()
+	}
+	if len(args) == 1 && (args[0] == "--version" || args[0] == "-version") {
+		_, err := fmt.Fprintln(output, version)
+		return err
+	}
+	return errors.New("usage: dujiao-next-telegram-bot [--version]")
 }
 
 func run() error {

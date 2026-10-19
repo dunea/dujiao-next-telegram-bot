@@ -40,7 +40,7 @@
 
 后续迭代顺序和完成标准见 [ROADMAP.md](ROADMAP.md)。
 
-当前开发版本：`v0.4.0-dev`；已完成的功能版本为 `v0.3.0`。变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：[`v0.4.0`](https://github.com/dunea/dujiao-next-telegram-bot/releases/tag/v0.4.0)。变更记录见 [CHANGELOG.md](CHANGELOG.md)，下载校验、新部署、升级/回滚和故障处理见 [RELEASE.md](RELEASE.md)，测试范围见 [整体验收记录](docs/acceptance-v0.4.0.md)。
 
 ## 环境要求
 
@@ -239,6 +239,8 @@ make lint
 make build
 ```
 
+版本整体验收使用 `make verify` 和 `make acceptance`，维护者打包使用 `make release`；详细边界见 [发布与运维说明](RELEASE.md)。二进制或容器内执行 `--version` 可在不加载密钥、不连接网络的情况下查看版本。
+
 ### 本地 Telegram 演示商店
 
 在 `.env` 中只填写 `TELEGRAM_BOT_TOKEN`，即可用内置演示商品启动真实 Telegram Bot；演示充值会即时到账，不会产生真实付款：
@@ -321,6 +323,7 @@ cmd/bot/             启动与生命周期管理
 cmd/loadtest/        本地 HTTP/回调压测工具
 cmd/mock-api/        Docker 集成测试 Mock API
 internal/callback/   Dujiao-Next 主动回调验签
+internal/broadcast/  主动订阅、固定受众与保守恢复的轻量群发队列
 internal/config/     环境变量配置
 internal/dujiao/     Channel API 客户端与签名
 internal/session/    内存/Redis 会话、加密与提现保护

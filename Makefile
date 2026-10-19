@@ -1,4 +1,4 @@
-.PHONY: build test lint run integration-up integration-down demo-up demo-down loadtest
+.PHONY: build test lint verify acceptance release run integration-up integration-down demo-up demo-down loadtest
 
 build:
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
@@ -8,6 +8,19 @@ test:
 
 lint:
 	go vet ./...
+
+verify:
+	test -z "$$(gofmt -l cmd internal)"
+	go mod verify
+	go vet ./...
+	go test -race -count=3 ./...
+	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
+
+acceptance:
+	sh scripts/acceptance.sh
+
+release:
+	sh scripts/package-release.sh
 
 run:
 	go run ./cmd/bot

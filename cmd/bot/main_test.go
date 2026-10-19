@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -11,6 +12,25 @@ import (
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
+
+func TestVersionCommandDoesNotRequireCredentials(t *testing.T) {
+	t.Setenv("DUJIAO_BASE_URL", "")
+	t.Setenv("DUJIAO_CHANNEL_KEY", "")
+	t.Setenv("DUJIAO_CHANNEL_SECRET", "")
+	for _, flag := range []string{"--version", "-version"} {
+		var output bytes.Buffer
+		if err := command([]string{flag}, &output); err != nil || output.String() != "0.4.0\n" {
+			t.Fatal("version check loaded configuration or returned wrong version", err, output.String())
+		}
+	}
+}
+
+func TestUnknownArgumentsDoNotStartBot(t *testing.T) {
+	var output bytes.Buffer
+	if err := command([]string{"--unknown"}, &output); err == nil || output.Len() != 0 {
+		t.Fatal("unknown arguments should return usage before startup")
+	}
+}
 
 type healthNotifier struct{ err error }
 
