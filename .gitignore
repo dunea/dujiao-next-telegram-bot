@@ -1,0 +1,6 @@
+.env
+config.yml
+data/
+dist/
+coverage.out
+dujiao-next-telegram-bot

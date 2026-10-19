@@ -1,0 +1,34 @@
+name: dujiao-bot-integration
+
+services:
+  mock-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  bot:
+    build: .
+    environment:
+      DUJIAO_BASE_URL: http://mock-api:8080
+      DUJIAO_CHANNEL_KEY: integration-key
+      DUJIAO_CHANNEL_SECRET: integration-secret
+      TELEGRAM_BOT_TOKEN: 999001:integration-token
+      TELEGRAM_API_URL: http://mock-api:8080
+      BOT_HTTP_LISTEN: :8444
+      BOT_POLL_TIMEOUT: 2s
+      BOT_LOG_LEVEL: info
+    ports:
+      - "18444:8444"
+    depends_on:
+      mock-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8444/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
