@@ -39,6 +39,7 @@ type formFixture struct {
 	rechargeChannelsFail bool
 	rechargeFailure      bool
 	rechargePayment      *dujiao.WalletRechargePayment
+	affiliate            affiliateTestState
 	nextID               atomic.Int64
 }
 
@@ -62,7 +63,7 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 			var result any = true
 			switch method {
 			case "getMe":
-				result = map[string]any{"id": 999, "is_bot": true, "first_name": "Test"}
+				result = map[string]any{"id": 999, "is_bot": true, "first_name": "Test", "username": "test_bot"}
 			case "sendMessage", "editMessageText":
 				_ = r.ParseMultipartForm(1 << 20)
 				if r.MultipartForm != nil {
@@ -76,6 +77,10 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 				result = map[string]any{"message_id": fixture.nextID.Add(1), "date": 1, "chat": map[string]any{"id": 42, "type": "private"}, "text": text}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/v1/channel/affiliate/") || strings.HasPrefix(r.URL.Path, "/api/v1/channel/identities/") {
+			fixture.affiliate.serveHTTP(t, w, r)
 			return
 		}
 		var data any

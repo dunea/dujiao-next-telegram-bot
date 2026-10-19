@@ -85,6 +85,7 @@ func (a *App) Start(ctx context.Context) {
 		{Command: "wallet", Description: "账户余额 / Wallet"},
 		{Command: "recharge", Description: "钱包充值 / Recharge"},
 		{Command: "redeem", Description: "礼品卡兑换 / Redeem gift card"},
+		{Command: "affiliate", Description: "推广中心 / Affiliate"},
 		{Command: "language", Description: "切换语言 / Language"},
 		{Command: "help", Description: "帮助 / Help"},
 		{Command: "cancel", Description: "取消当前操作 / Cancel"},
@@ -133,7 +134,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	state := a.sessions.Get(message.From.ID)
 	navigating := false
 	switch command {
-	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/language", "/help", "/cancel":
+	case "/start", "/products", "/orders", "/wallet", "/recharge", "/redeem", "/affiliate", "/language", "/help", "/cancel":
 		navigating = true
 	}
 	if state.Flow == "manual_form" && !navigating {
@@ -173,6 +174,8 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.askRechargeAmount(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/redeem":
 		a.askGiftCard(ctx, message.Chat.ID, message.From.ID)
+	case "/affiliate":
+		a.showAffiliate(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/language":
 		a.showLanguage(ctx, message.Chat.ID, false, 0)
 	case "/help":
@@ -187,6 +190,12 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 
 func (a *App) start(ctx context.Context, message *models.Message, inviteCode string) {
 	user := message.From
+	if strings.HasPrefix(inviteCode, "aff_") {
+		if !a.acceptAffiliateStart(ctx, message, strings.TrimPrefix(inviteCode, "aff_")) {
+			return
+		}
+		inviteCode = "" // Referral links are not registration invite codes.
+	}
 	locale := normalizeLocale(user.LanguageCode)
 	state := a.sessions.Get(user.ID)
 	if state.Locale != "" {
@@ -358,6 +367,17 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.askRechargeAmount(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "giftcard":
 		a.askGiftCard(ctx, message.Chat.ID, query.From.ID)
+	case "affiliate":
+		a.showAffiliate(ctx, message.Chat.ID, query.From.ID, true, message.ID)
+	case "affopen":
+		a.openAffiliate(ctx, message, &query.From)
+	case "affcomm", "affwithdraws":
+		if len(parts) == 2 {
+			page, err := strconv.Atoi(parts[1])
+			if err == nil && page >= 1 && page <= 100000 {
+				a.showAffiliateRecords(ctx, message.Chat.ID, message.ID, query.From.ID, parts[0], page)
+			}
+		}
 	case "lang":
 		a.showLanguage(ctx, message.Chat.ID, true, message.ID)
 	case "setlang":
@@ -685,10 +705,11 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 	locale := a.sessions.Get(user.ID).Locale
 	a.edit(ctx, chatID, messageID, tr(locale, "正在创建订单…", "正在建立訂單…", "Creating order…"), nil)
 	request := dujiao.OrderRequest{
-		TelegramIdentity: identityFromUser(user, locale),
-		Items:            []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
-		ManualFormData:   formData,
-		CouponCode:       couponCode,
+		TelegramIdentity:    identityFromUser(user, locale),
+		Items:               []dujiao.OrderItemRequest{{ProductID: productID, SKUID: skuID, Quantity: quantity}},
+		ManualFormData:      formData,
+		CouponCode:          couponCode,
+		AffiliateVisitorKey: affiliateVisitorKey(user.ID),
 	}
 	order, err := a.api.CreateOrder(ctx, request)
 	if err != nil {
@@ -1161,6 +1182,7 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 			{Text: tr(locale, "🌐 语言", "🌐 語言", "🌐 Language"), CallbackData: "lang"},
 			{Text: tr(locale, "❓ 帮助", "❓ 幫助", "❓ Help"), CallbackData: "help"},
 		},
+		{{Text: tr(locale, "🤝 推广中心", "🤝 推廣中心", "🤝 Affiliate"), CallbackData: "affiliate"}},
 	}
 	config := a.botConfig()
 	var rows [][]models.InlineKeyboardButton
@@ -1185,6 +1207,8 @@ func configuredMenuRows(items []dujiao.BotMenuItem, locale string) [][]models.In
 		"shop_home":       "cats",
 		"my_orders":       "orders:1",
 		"my_wallet":       "wallet",
+		"affiliate":       "affiliate",
+		"my_affiliate":    "affiliate",
 		"switch_language": "lang",
 		"contact_support": "help",
 	}

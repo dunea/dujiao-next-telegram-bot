@@ -230,6 +230,11 @@ func request[T any](ctx context.Context, c *Client, method, relativePath string,
 
 	var envelope Envelope
 	if err := json.Unmarshal(responseBody, &envelope); err != nil {
+		// Older stores/proxies may return plain-text 404/501 for missing routes.
+		// Preserve the status without exposing an untrusted HTML/error body.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return zero, &APIError{HTTPStatus: resp.StatusCode, StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
+		}
 		return zero, fmt.Errorf("decode Dujiao response (HTTP %d): %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.StatusCode != 0 {

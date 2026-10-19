@@ -168,10 +168,11 @@ type OrderItemRequest struct {
 
 type OrderRequest struct {
 	TelegramIdentity
-	Items          []OrderItemRequest `json:"items"`
-	CouponCode     string             `json:"coupon_code,omitempty"`
-	AffiliateCode  string             `json:"affiliate_code,omitempty"`
-	ManualFormData map[string]any     `json:"manual_form_data,omitempty"`
+	Items               []OrderItemRequest `json:"items"`
+	CouponCode          string             `json:"coupon_code,omitempty"`
+	AffiliateCode       string             `json:"affiliate_code,omitempty"`
+	AffiliateVisitorKey string             `json:"affiliate_visitor_key,omitempty"`
+	ManualFormData      map[string]any     `json:"manual_form_data,omitempty"`
 }
 
 type OrderPreview struct {

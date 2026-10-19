@@ -119,6 +119,10 @@ func telegramHandler(w http.ResponseWriter, request *http.Request) {
 func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 	dujiaoRequests.Add(1)
 	path := strings.TrimPrefix(request.URL.Path, "/api/v1/channel")
+	if strings.HasPrefix(path, "/affiliate/") {
+		demoAffiliateHandler(w, request, path)
+		return
+	}
 	var data any = map[string]any{}
 	switch path {
 	case "/telegram/config":
@@ -349,6 +353,7 @@ func demoBuildPreview(payload demoOrderInput) map[string]any {
 		"coupon_code": code, "coupon_discount": money(discount), "promotion_discount": "0.00", "wholesale_discount": "0.00",
 		"total_amount": money(total - discount), "currency": "CNY", "valid": len(validationErrors) == 0,
 		"validation_errors": validationErrors,
+		"channel_user_id":   payload.ChannelUserID, "affiliate_visitor_key": payload.AffiliateVisitorKey,
 	}
 }
 
@@ -380,6 +385,7 @@ func demoCreatePreviewedOrder(preview map[string]any) map[string]any {
 		"online_paid_amount": "0.00", "product_title": title, "item_count": len(items), "created_at": createdAt,
 		"fulfillment_type": fulfillmentType, "fulfillment_status": "", "fulfillment_result": nil,
 		"fulfillment_instructions": "", "children": []any{}, "items": items,
+		"channel_user_id": preview["channel_user_id"], "affiliate_code": demoAffiliateOrderCode(preview),
 	}
 	orderMu.Lock()
 	demoOrders = append([]map[string]any{order}, demoOrders...)
@@ -538,6 +544,7 @@ func completeDemoOrder(orderID uint, useBalance bool) bool {
 			} else {
 				order["online_paid_amount"] = order["total_amount"]
 			}
+			recordDemoAffiliateCommission(order)
 			return true
 		}
 	}
@@ -595,9 +602,11 @@ type orderItem struct {
 }
 
 type demoOrderInput struct {
-	Items          []orderItem               `json:"items"`
-	ManualFormData map[string]map[string]any `json:"manual_form_data"`
-	CouponCode     string                    `json:"coupon_code"`
+	ChannelUserID       string                    `json:"channel_user_id"`
+	AffiliateVisitorKey string                    `json:"affiliate_visitor_key"`
+	Items               []orderItem               `json:"items"`
+	ManualFormData      map[string]map[string]any `json:"manual_form_data"`
+	CouponCode          string                    `json:"coupon_code"`
 }
 
 func demoFulfillmentType(product demoProduct) string {

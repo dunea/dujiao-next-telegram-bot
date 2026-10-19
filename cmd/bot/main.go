@@ -18,7 +18,7 @@ import (
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
 
-const version = "0.3.0"
+const version = "0.4.0-dev"
 
 func main() {
 	if err := run(); err != nil {

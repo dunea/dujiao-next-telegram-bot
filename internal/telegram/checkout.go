@@ -31,9 +31,10 @@ func newPurchaseDraft(chatID int64, product dujiao.ProductDetail, skuID uint, qu
 
 func draftOrderRequest(user *models.User, locale string, draft *session.PurchaseDraft, values map[string]any) dujiao.OrderRequest {
 	request := dujiao.OrderRequest{
-		TelegramIdentity: identityFromUser(user, locale),
-		Items:            []dujiao.OrderItemRequest{{ProductID: draft.ProductID, SKUID: draft.SKUID, Quantity: draft.Quantity}},
-		CouponCode:       draft.CouponCode,
+		TelegramIdentity:    identityFromUser(user, locale),
+		Items:               []dujiao.OrderItemRequest{{ProductID: draft.ProductID, SKUID: draft.SKUID, Quantity: draft.Quantity}},
+		CouponCode:          draft.CouponCode,
+		AffiliateVisitorKey: affiliateVisitorKey(user.ID),
 	}
 	if len(draft.Schema.Fields) > 0 {
 		request.ManualFormData = map[string]any{manualform.ItemKey(draft.ProductID, draft.SKUID): values}
