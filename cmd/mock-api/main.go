@@ -177,14 +177,12 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 			data = created
 		}
 	case "/payment-channels":
-		channelName := "演示二维码支付"
-		interactionMode := "qr"
 		if request.URL.Query().Get("context") == "recharge" {
-			channelName = "演示即时到账"
-			interactionMode = "redirect"
+			data = dujiao.PaymentChannelList{Items: demoRechargeChannels()}
+			break
 		}
 		data = map[string]any{"items": []map[string]any{
-			{"id": 1, "name": channelName, "provider_type": "demo", "channel_type": "web", "interaction_mode": interactionMode, "fee_rate": "0.00", "fixed_fee": "0.00"},
+			{"id": 1, "name": "演示二维码支付", "provider_type": "demo", "channel_type": "web", "interaction_mode": "qr", "fee_rate": "0.00", "fixed_fee": "0.00"},
 		}}
 	case "/payments":
 		payment, errorCode := demoCreatePayment(request)
@@ -202,7 +200,8 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 	case "/wallet/transactions":
 		data = demoWalletTransactionList(request)
 	case "/wallet/recharge":
-		data = demoWalletRecharge(request)
+		demoWalletRecharge(w, request)
+		return
 	case "/wallet/gift-card/redeem":
 		demoRedeemGiftCard(w, request)
 		return
@@ -543,26 +542,6 @@ func completeDemoOrder(orderID uint, useBalance bool) bool {
 		}
 	}
 	return false
-}
-
-func demoWalletRecharge(request *http.Request) map[string]any {
-	var payload struct {
-		Amount    string `json:"amount"`
-		ChannelID uint   `json:"channel_id"`
-	}
-	_ = json.NewDecoder(request.Body).Decode(&payload)
-	id := rechargeSequence.Add(1)
-	amountCents := moneyToCents(payload.Amount)
-	balanceAfter := walletBalanceCents.Add(amountCents)
-	recordWalletTransaction("recharge", "in", amountCents, balanceAfter, fmt.Sprintf("演示充值 RECHARGE%06d", id))
-	return map[string]any{
-		"recharge_no": fmt.Sprintf("RECHARGE%06d", id),
-		"payment": map[string]any{
-			"id": id, "amount": payload.Amount, "fee_amount": "0.00", "currency": "CNY",
-			"status": "success", "interaction_mode": "demo",
-			"expires_at": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
-		},
-	}
 }
 
 func demoWalletTransactionList(request *http.Request) map[string]any {

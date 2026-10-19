@@ -9,7 +9,6 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,12 +20,11 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
 )
 
 const pageSize = 8
-
-var moneyInputPattern = regexp.MustCompile(`^[0-9]{1,7}(\.[0-9]{1,2})?$`)
 
 type App struct {
 	bot      *tgbot.Bot
@@ -150,7 +148,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleGiftCardMessage(ctx, message)
 		return
 	}
-	if navigating && (state.Purchase != nil || state.GiftCard != nil) {
+	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil) {
 		a.sessions.ResetFlow(message.From.ID)
 	}
 	if state.Flow == "invite" && !strings.HasPrefix(message.Text, "/") {
@@ -259,6 +257,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := a.sessions.Get(query.From.ID).Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "rechargepick" || parts[0] == "rechargepay" || parts[0] == "rechargepage" {
+		a.handleRechargeCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "coupon" {
 		a.handleCouponCallback(ctx, query, parts)
 		return
@@ -356,11 +358,6 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.askRechargeAmount(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "giftcard":
 		a.askGiftCard(ctx, message.Chat.ID, query.From.ID)
-	case "rechargepay":
-		if len(parts) == 3 {
-			channelID, _ := strconv.ParseUint(parts[1], 10, 64)
-			a.createWalletRecharge(ctx, message.Chat.ID, message.ID, query.From.ID, parts[2], uint(channelID))
-		}
 	case "lang":
 		a.showLanguage(ctx, message.Chat.ID, true, message.ID)
 	case "setlang":
@@ -1093,70 +1090,22 @@ func (a *App) showWalletTransactions(ctx context.Context, chatID, userID int64, 
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
-func (a *App) askRechargeAmount(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
-	locale := a.sessions.Get(userID).Locale
-	a.sessions.Update(userID, func(state *session.State) { state.Flow = "recharge_amount" })
-	text := tr(locale,
-		"请输入充值金额，例如 <code>50</code> 或 <code>100.00</code>。发送 /cancel 取消。",
-		"請輸入儲值金額，例如 <code>50</code> 或 <code>100.00</code>。傳送 /cancel 取消。",
-		"Enter the recharge amount, for example <code>50</code> or <code>100.00</code>. Send /cancel to cancel.")
-	a.sendOrEdit(ctx, chatID, messageID, text, a.backKeyboard(locale), edit)
-}
-
-func (a *App) handleRechargeAmount(ctx context.Context, message *models.Message) {
-	locale := a.sessions.Get(message.From.ID).Locale
-	amount, ok := normalizeMoneyInput(message.Text)
-	if !ok {
-		a.send(ctx, message.Chat.ID, tr(locale,
-			"金额格式不正确，请输入大于 0、最多两位小数的金额。",
-			"金額格式不正確，請輸入大於 0、最多兩位小數的金額。",
-			"Invalid amount. Enter a value greater than zero with no more than two decimal places."), nil)
-		return
-	}
-	channels, err := a.api.RechargeChannels(ctx)
-	if err != nil {
-		a.apiFailure(ctx, message.Chat.ID, locale, "list recharge channels", err)
-		return
-	}
-	if len(channels.Items) == 0 {
-		a.send(ctx, message.Chat.ID, tr(locale, "商店暂未配置钱包充值渠道。", "商店暫未設定錢包儲值管道。", "No wallet recharge channel is configured."), a.backKeyboard(locale))
-		return
-	}
-	a.sessions.ResetFlow(message.From.ID)
-	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+1)
-	for _, channel := range channels.Items {
-		rows = append(rows, []models.InlineKeyboardButton{{
-			Text: channel.Name, CallbackData: fmt.Sprintf("rechargepay:%d:%s", channel.ID, amount),
-		}})
-	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
-	text := tr(locale, "充值金额：", "儲值金額：", "Recharge amount: ") + "<b>" + html.EscapeString(amount) + "</b>\n\n"
-	text += tr(locale, "请选择支付渠道：", "請選擇付款管道：", "Choose a payment channel:")
-	a.send(ctx, message.Chat.ID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
-}
-
-func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID int, userID int64, amount string, channelID uint) {
+func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID int, userID int64, amount, currency string, channelID uint) {
 	locale := a.sessions.Get(userID).Locale
 	result, err := a.api.CreateWalletRecharge(ctx, strconv.FormatInt(userID, 10), amount, channelID)
 	if err != nil {
 		a.logger.Error("create wallet recharge", "user_id", userID, "error", err)
-		a.edit(ctx, chatID, messageID, tr(locale, "创建充值订单失败，请稍后重试。", "建立儲值訂單失敗，請稍後再試。", "Could not create the recharge. Please try again later."), a.backKeyboard(locale))
+		a.edit(ctx, chatID, messageID, tr(locale, "暂时无法确认充值单创建结果。请先查看钱包、交易流水及支付账户，避免重复付款；未确认前不要再次充值。", "暫時無法確認儲值單建立結果。請先查看錢包、交易明細及付款帳戶，避免重複付款；未確認前不要再次儲值。", "The recharge result could not be confirmed. Check your wallet, transactions and payment account before starting another recharge to avoid duplicate payments."), rechargeResultKeyboard(locale))
 		return
 	}
 	if result.Payment.Status == "success" || result.Payment.Status == "succeeded" || result.Payment.Status == "paid" {
 		text := "✅ " + tr(locale, "充值成功，余额已更新。", "儲值成功，餘額已更新。", "Recharge succeeded. Your balance has been updated.")
-		keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: tr(locale, "查看余额", "查看餘額", "View balance"), CallbackData: "wallet"}},
-		}}
-		a.edit(ctx, chatID, messageID, text, keyboard)
+		text += "\n\n" + rechargeReceipt(locale, amount, currency, result)
+		a.edit(ctx, chatID, messageID, text, rechargeResultKeyboard(locale))
 		return
 	}
 	text := "<b>" + tr(locale, "充值订单已创建", "儲值訂單已建立", "Recharge created") + "</b>\n\n"
-	text += tr(locale, "充值单号：", "儲值單號：", "Recharge: ") + "<code>" + html.EscapeString(result.RechargeNo) + "</code>"
-	text += "\n" + tr(locale, "金额：", "金額：", "Amount: ") + html.EscapeString(result.Payment.Amount+" "+result.Payment.Currency)
-	if result.Payment.FeeAmount != "" && result.Payment.FeeAmount != "0.00" {
-		text += "\n" + tr(locale, "手续费：", "手續費：", "Fee: ") + html.EscapeString(result.Payment.FeeAmount+" "+result.Payment.Currency)
-	}
+	text += rechargeReceipt(locale, amount, currency, result)
 	if result.Payment.WalletAddress != "" {
 		text += "\n" + tr(locale, "收款地址：", "收款地址：", "Address: ") + "<code>" + html.EscapeString(result.Payment.WalletAddress) + "</code>"
 	}
@@ -1380,14 +1329,11 @@ func truncate(value string, maxRunes int) string {
 
 func normalizeMoneyInput(input string) (string, bool) {
 	input = strings.TrimSpace(input)
-	if !moneyInputPattern.MatchString(input) {
+	cents, ok := money.Parse(input)
+	if !ok || cents <= 0 || cents > 100_000_000 {
 		return "", false
 	}
-	value, err := strconv.ParseFloat(input, 64)
-	if err != nil || value <= 0 || value > 1_000_000 {
-		return "", false
-	}
-	return fmt.Sprintf("%.2f", value), true
+	return money.Format(cents), true
 }
 
 func formatFulfillmentPayload(payload any) string {

@@ -27,12 +27,18 @@ type formFixture struct {
 	previews             []dujiao.OrderRequest
 	orders               []dujiao.OrderRequest
 	texts                []string
+	markups              []string
 	previewFails         bool
 	couponExpired        bool
 	rejectCouponOnCreate bool
 	couponTotal          string
 	giftCodes            []string
 	giftFailureCode      string
+	rechargeRequests     []rechargeTestRequest
+	rechargeChannels     []dujiao.PaymentChannel
+	rechargeChannelsFail bool
+	rechargeFailure      bool
+	rechargePayment      *dujiao.WalletRechargePayment
 	nextID               atomic.Int64
 }
 
@@ -45,6 +51,10 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 		SKUs:             []dujiao.SKU{{ID: 31, StockStatus: "in_stock", Price: "10.00"}},
 	}}
 	fixture.nextID.Store(100)
+	fixture.rechargeChannels = []dujiao.PaymentChannel{
+		{ID: 1, Name: "免手续费", FeeRate: "0.00", FixedFee: "0.00"},
+		{ID: 2, Name: "演示手续费", FeeRate: "2.50", FixedFee: "1.00"},
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasPrefix(r.URL.Path, "/bot") {
@@ -61,6 +71,7 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 				text := r.FormValue("text")
 				fixture.mu.Lock()
 				fixture.texts = append(fixture.texts, text)
+				fixture.markups = append(fixture.markups, r.FormValue("reply_markup"))
 				fixture.mu.Unlock()
 				result = map[string]any{"message_id": fixture.nextID.Add(1), "date": 1, "chat": map[string]any{"id": 42, "type": "private"}, "text": text}
 			}
@@ -69,6 +80,25 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 		}
 		var data any
 		switch r.URL.Path {
+		case "/api/v1/channel/wallet/recharge":
+			var request rechargeTestRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+			}
+			fixture.mu.Lock()
+			fixture.rechargeRequests = append(fixture.rechargeRequests, request)
+			failure := fixture.rechargeFailure
+			payment := dujiao.WalletRechargePayment{Amount: request.Amount, FeeAmount: "0.00", Currency: "CNY", Status: "success"}
+			if fixture.rechargePayment != nil {
+				payment = *fixture.rechargePayment
+			}
+			fixture.mu.Unlock()
+			if failure {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 503, "error_code": "unavailable"})
+				return
+			}
+			data = dujiao.WalletRechargeResult{RechargeNo: "RC42", Payment: payment}
 		case "/api/v1/channel/wallet/gift-card/redeem":
 			var request struct {
 				ChannelUserID string `json:"channel_user_id"`
@@ -137,6 +167,16 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 			fixture.mu.Unlock()
 		case "/api/v1/channel/payment-channels":
 			data = dujiao.PaymentChannelList{}
+			if r.URL.Query().Get("context") == "recharge" {
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				if fixture.rechargeChannelsFail {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 503, "error_code": "unavailable"})
+					return
+				}
+				data = dujiao.PaymentChannelList{Items: fixture.rechargeChannels}
+			}
 		default:
 			t.Errorf("unexpected API request: %s", r.URL.Path)
 		}

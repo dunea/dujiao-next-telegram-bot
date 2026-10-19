@@ -15,6 +15,21 @@ type State struct {
 	Flow     string
 	Purchase *PurchaseDraft
 	GiftCard *GiftCardInput
+	Recharge *RechargeDraft
+}
+
+// RechargeDraft binds amount/channel selection to one private-chat message.
+type RechargeDraft struct {
+	ID         string
+	ChatID     int64
+	MessageID  int
+	Custom     bool
+	Amount     string
+	Currency   string
+	Channels   []dujiao.PaymentChannel
+	Page       int
+	ExpiresAt  time.Time
+	Submitting bool
 }
 
 // GiftCardInput holds prompt metadata, never the gift card code.
@@ -47,6 +62,11 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.Recharge != nil {
+		draft := *state.Recharge
+		draft.Channels = slices.Clone(draft.Channels)
+		state.Recharge = &draft
+	}
 	if state.GiftCard != nil {
 		input := *state.GiftCard
 		state.GiftCard = &input
@@ -96,6 +116,13 @@ func NewMemory(defaultLocale string) *Memory {
 func (m *Memory) Get(userID int64) State {
 	m.mu.Lock()
 	state, ok := m.users[userID]
+	if state.Recharge != nil && !time.Now().Before(state.Recharge.ExpiresAt) {
+		state.Recharge = nil
+		if state.Flow == "recharge_amount" || state.Flow == "recharge_channels" {
+			state.Flow = ""
+		}
+		m.users[userID] = state
+	}
 	if state.GiftCard != nil && !time.Now().Before(state.GiftCard.ExpiresAt) {
 		state.GiftCard = nil
 		if state.Flow == "gift_card" {
@@ -132,5 +159,5 @@ func (m *Memory) Update(userID int64, update func(*State)) State {
 }
 
 func (m *Memory) ResetFlow(userID int64) {
-	m.Update(userID, func(state *State) { state.Flow = ""; state.Purchase = nil; state.GiftCard = nil })
+	m.Update(userID, func(state *State) { state.Flow = ""; state.Purchase = nil; state.GiftCard = nil; state.Recharge = nil })
 }

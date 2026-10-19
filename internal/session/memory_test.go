@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 	"time"
+
+	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 )
 
 func TestMemoryDefaultsAndUpdates(t *testing.T) {
@@ -21,6 +23,28 @@ func TestMemoryDefaultsAndUpdates(t *testing.T) {
 	store.ResetFlow(42)
 	if got := store.Get(42).Flow; got != "" {
 		t.Fatalf("flow was not reset: %q", got)
+	}
+}
+
+func TestRechargeDraftIsolationExpiryAndReset(t *testing.T) {
+	store := NewMemory("zh-CN")
+	draft := &RechargeDraft{ID: "recharge", ChatID: 42, MessageID: 7, Channels: []dujiao.PaymentChannel{{ID: 1}}, ExpiresAt: time.Now().Add(time.Minute)}
+	returned := store.Update(42, func(state *State) { state.Flow = "recharge_channels"; state.Recharge = draft })
+	draft.Channels[0].ID = 99
+	returned.Recharge.Channels[0].ID = 98
+	read := store.Get(42)
+	read.Recharge.Channels[0].ID = 97
+	if got := store.Get(42).Recharge.Channels[0].ID; got != 1 {
+		t.Fatalf("recharge channel shared mutable state: %d", got)
+	}
+	store.Update(42, func(state *State) { state.Recharge.ExpiresAt = time.Now().Add(-time.Second) })
+	if state := store.Get(42); state.Recharge != nil || state.Flow != "" {
+		t.Fatal("expired recharge retained")
+	}
+	store.Update(42, func(state *State) { state.Recharge = draft; state.Flow = "recharge_amount" })
+	store.ResetFlow(42)
+	if state := store.Get(42); state.Recharge != nil || state.Flow != "" {
+		t.Fatal("cancelled recharge retained")
 	}
 }
 
