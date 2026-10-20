@@ -24,6 +24,7 @@ var rechargeSequence atomic.Uint64
 var walletBalanceCents atomic.Int64
 var orderMu sync.Mutex
 var demoOrders []map[string]any
+var demoPayments = make(map[uint]map[string]any) // guarded by orderMu; synthetic only
 var walletTransactionMu sync.Mutex
 var demoWalletTransactions []map[string]any
 
@@ -102,7 +103,7 @@ func telegramHandler(w http.ResponseWriter, request *http.Request) {
 		writeJSON(w, map[string]any{"ok": true, "result": []any{}})
 	case "setmycommands":
 		writeJSON(w, map[string]any{"ok": true, "result": true})
-	case "sendmessage", "editmessagetext":
+	case "sendmessage", "editmessagetext", "sendphoto", "senddocument":
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{
 			"message_id": 1,
 			"date":       time.Now().Unix(),
@@ -199,6 +200,36 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 		data = payment
+	case "/payments/latest":
+		id, parseErr := strconv.ParseUint(request.URL.Query().Get("order_id"), 10, 64)
+		uid := request.URL.Query().Get("channel_user_id")
+		orderMu.Lock()
+		var owned map[string]any
+		for _, o := range demoOrders {
+			if o["order_id"] == uint(id) && uid != "" && o["channel_user_id"] == uid {
+				owned = o
+				break
+			}
+		}
+		code := "order_not_found"
+		if parseErr == nil && id > 0 && owned != nil {
+			code = "payment_not_found"
+			if p := demoPayments[uint(id)]; p != nil && owned["status"] == "pending_payment" {
+				expires, _ := p["expires_at"].(string)
+				deadline, e := time.Parse(time.RFC3339, expires)
+				if e == nil && time.Now().Before(deadline) {
+					data = cloneMap(p)
+					code = ""
+				}
+			}
+		}
+		orderMu.Unlock()
+		if code != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			writeJSON(w, map[string]any{"status_code": 404, "error_code": code})
+			return
+		}
 	case "/wallet":
 		data = map[string]any{"balance": money(int(walletBalanceCents.Load())), "currency": "CNY"}
 	case "/wallet/transactions":
@@ -421,7 +452,7 @@ func demoOrderList(request *http.Request) map[string]any {
 	defer orderMu.Unlock()
 	matching := make([]map[string]any, 0, len(demoOrders))
 	for _, order := range demoOrders {
-		if status != "" && order["status"] != status {
+		if status != "" && order["status"] != status && !(status == "canceled" && order["status"] == "cancelled") {
 			continue
 		}
 		matching = append(matching, cloneMap(order))
@@ -502,12 +533,16 @@ func demoCreatePayment(request *http.Request) (map[string]any, string) {
 		return map[string]any{"order_paid": true, "order_id": payload.OrderID, "status": "success", "currency": "CNY"}, ""
 	}
 	amount := demoOrderAmount(payload.OrderID)
-	return map[string]any{
+	result := map[string]any{
 		"order_paid": false, "payment_id": payload.OrderID, "order_id": payload.OrderID,
 		"status": "pending", "channel_name": "演示二维码支付", "amount": amount, "currency": "CNY",
 		"interaction_mode": "qr", "qr_code": fmt.Sprintf("dujiao-demo://payment/%d", payload.OrderID),
 		"expires_at": time.Now().Add(15 * time.Minute).UTC().Format(time.RFC3339),
-	}, ""
+	}
+	orderMu.Lock()
+	demoPayments[payload.OrderID] = cloneMap(result)
+	orderMu.Unlock()
+	return result, ""
 }
 
 func demoOrderAmount(orderID uint) string {

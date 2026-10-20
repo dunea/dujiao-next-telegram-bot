@@ -398,7 +398,7 @@ func (a *App) presentExistingPayment(ctx context.Context, uid int64, mid int, o 
 	existing := a.polls[o.OrderID]
 	hasQR := existing != nil && existing.paymentID == p.PaymentID && existing.qrMessageID > 0
 	a.pollMu.Unlock()
-	if (newPayment || showQR) && !hasQR {
+	if showQR || (newPayment && !hasQR) {
 		qr = a.sendPaymentQRCode(ctx, uid, locale, p.QRCode, p.PayURL, p.InteractionMode, p.Amount, p.Currency)
 	}
 	exp := p.ExpiresAt

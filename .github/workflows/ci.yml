@@ -106,8 +106,58 @@ jobs:
       - name: Build production image
         run: docker build --tag dujiao-next-telegram-bot:ci .
 
+      - name: Check offline production entry points and non-root user
+        run: |
+          test "$(docker run --rm --network none dujiao-next-telegram-bot:ci --version)" = "$(sed -n 's/^const version = "\([^"]*\)"/\1/p' cmd/bot/main.go)"
+          docker run --rm --network none dujiao-next-telegram-bot:ci setup --help
+          test "$(docker run --rm --network none --entrypoint id dujiao-next-telegram-bot:ci -u)" != 0
+
       - name: Build integration image
         run: docker build --file Dockerfile.integration --tag dujiao-next-telegram-bot-mock:ci .
+
+  release-bundles:
+    name: Release bundle validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build and validate four clean-source release bundles
+        shell: bash
+        run: |
+          version=$(go run ./cmd/bot --version)
+          if [[ "$version" == *-dev ]]; then
+            make release-candidate
+            bundle_dir="dist/candidates/${version}-${GITHUB_SHA}"
+          else
+            make release
+            bundle_dir="dist/release/v${version}"
+          fi
+          go run ./cmd/releasecheck -dir "$bundle_dir" > "$bundle_dir/validation.json"
+          native="$bundle_dir/dujiao-next-telegram-bot_v${version}_linux_amd64"
+          test "$("$native/dujiao-next-telegram-bot" --version)" = "$version"
+          "$native/dujiao-next-telegram-bot" setup --help
+          "$native/dujiao-compatcheck" -matrix
+      - name: Preserve public candidate artifacts only
+        uses: actions/upload-artifact@v6
+        with:
+          name: validated-release-bundles
+          path: |
+            dist/candidates/*/*.tar.gz
+            dist/candidates/*/checksums.txt
+            dist/candidates/*/release-manifest.json
+            dist/candidates/*/validation.json
+            dist/release/*/*.tar.gz
+            dist/release/*/checksums.txt
+            dist/release/*/release-manifest.json
+            dist/release/*/validation.json
+          if-no-files-found: error
+          retention-days: 14
 
   real-upstream:
     name: Real Dujiao-Next upgrade and Telegram E2E (${{ matrix.database }})

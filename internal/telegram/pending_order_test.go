@@ -245,6 +245,28 @@ func TestPendingContinueReusesPaymentAndRestartEntry(t *testing.T) {
 		t.Fatal("payment data logged")
 	}
 }
+
+func TestPendingExplicitQRCodeCanBeShownAgainWithoutNewPayment(t *testing.T) {
+	a, f := newPendingFixture(t)
+	pendingClick(a, 42, 42, 10, "resume:7")
+	pendingClick(a, 42, 42, 10, pendingPayAction(t, f))
+	pendingClick(a, 42, 42, 10, "payqr:7:8")
+	f.mu.Lock()
+	photos, posts := f.photos, f.posts
+	f.mu.Unlock()
+	if photos != 2 || posts != 1 {
+		t.Fatal("explicit Show QR must show original invoice again, never create a payment")
+	}
+	pendingClick(a, 42, 42, 10, "resume:7")
+	pendingClick(a, 43, 43, 10, "payqr:7:8")
+	pendingClick(a, 42, -100, 10, "payqr:7:8")
+	pendingClick(a, 42, 42, 10, "payqr:7:9")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.photos != 2 || f.posts != 1 {
+		t.Fatal("resume/foreign/stale buttons sent another QR or created payment")
+	}
+}
 func TestPendingConcurrentPaymentAndUnknownResults(t *testing.T) {
 	for _, mode := range []string{"concurrent", "lost-visible", "lost-invisible", "gateway-failed"} {
 		t.Run(mode, func(t *testing.T) {

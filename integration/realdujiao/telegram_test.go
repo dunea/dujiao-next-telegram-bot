@@ -338,13 +338,17 @@ func (f *telegramFlow) state() peerState {
 	f.control("/test/state", nil, &result)
 	return result
 }
-func (f *telegramFlow) command(text string) {
+func (f *telegramFlow) command(text string, replyTo ...tgMessage) {
 	// Incoming and outgoing messages share one Telegram private-chat sequence.
 	for _, m := range f.state().Messages {
 		f.inputID = max(f.inputID, m.ID)
 	}
 	f.inputID++
-	f.control("/test/update", map[string]any{"message": map[string]any{"message_id": f.inputID, "date": time.Now().Unix(), "chat": map[string]any{"id": buyerID, "type": "private"}, "from": map[string]any{"id": buyerID, "is_bot": false, "first_name": "Synthetic", "language_code": "zh-hans"}, "text": text}}, nil)
+	message := map[string]any{"message_id": f.inputID, "date": time.Now().Unix(), "chat": map[string]any{"id": buyerID, "type": "private"}, "from": map[string]any{"id": buyerID, "is_bot": false, "first_name": "Synthetic", "language_code": "zh-hans"}, "text": text}
+	if len(replyTo) > 0 {
+		message["reply_to_message"] = map[string]any{"message_id": replyTo[0].ID, "chat": map[string]any{"id": buyerID, "type": "private"}}
+	}
+	f.control("/test/update", map[string]any{"message": message}, nil)
 }
 func (f *telegramFlow) click(m tgMessage, data string) {
 	if data == "" {

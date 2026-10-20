@@ -12,5 +12,5 @@ command -v go >/dev/null
 if [ "${DUJIAO_REAL_DB:-}" != postgres ]; then command -v sqlite3 >/dev/null; fi
 for e2e_database in $e2e_databases; do
   DUJIAO_E2E_TEST=1 DUJIAO_REAL_DB="$e2e_database" \
-    go test -race -tags realdujiao ./integration/realdujiao -run '^TestTelegram(EndToEnd|AutoDelivery|CallbackRestart|BulkQuantity|BulkDeliveryTXT|PendingOrder|OrderNavigation|OrderSupport)$' -count=1 -v -timeout=20m
+    go test -race -tags realdujiao ./integration/realdujiao -run '^TestTelegram(EndToEnd|AutoDelivery|CallbackRestart|BulkQuantity|BulkDeliveryTXT|PendingOrder|OrderNavigation|OrderSupport|ReleaseJourney)$' -count=1 -v -timeout=20m
 done
