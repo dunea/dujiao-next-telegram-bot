@@ -174,8 +174,8 @@ func (a *App) renderOrderSupport(ctx context.Context, chatID int64, messageID in
 	if message != "" {
 		text += "\n\n<pre>" + html.EscapeString(message) + "</pre>"
 		rows = append(rows, []models.InlineKeyboardButton{
-			{Text: tr(locale, "📋 复制售后消息", "📋 複製售後訊息", "📋 Copy support message"), CopyText: &models.CopyTextButton{Text: message}},
-			{Text: tr(locale, "复制订单号", "複製訂單號", "Copy order number"), CopyText: &models.CopyTextButton{Text: order.OrderNo}},
+			{Text: tr(locale, "📋 复制售后消息", "📋 複製售後訊息", "📋 Copy message"), CopyText: &models.CopyTextButton{Text: message}},
+			{Text: tr(locale, "复制订单号", "複製訂單號", "Copy order no."), CopyText: &models.CopyTextButton{Text: order.OrderNo}},
 		})
 	} else {
 		text += "\n\n" + tr(locale, "商店未返回可用的完整订单号，请刷新订单或联系商家核对。", "商店未回傳可用的完整訂單號，請重新整理訂單或聯絡商家核對。", "A usable full order number is unavailable. Refresh the order or ask the seller to check.")
@@ -194,7 +194,7 @@ func (a *App) renderOrderSupport(ctx context.Context, chatID int64, messageID in
 	}
 	var issues []models.InlineKeyboardButton
 	for _, key := range []string{"p", "d", "r", "g"} {
-		label := supportReason(locale, key)
+		label := supportIssueLabel(locale, key)
 		if key == reason {
 			label = "✓ " + label
 		}
@@ -202,9 +202,25 @@ func (a *App) renderOrderSupport(ctx context.Context, chatID int64, messageID in
 	}
 	rows = append(rows, issues[:2], issues[2:])
 	text += "\n\n" + tr(locale, "仅准备咨询消息，不会自动发送、提交工单或退款。勿提供完整卡密、密码或支付密钥；截图请遮挡敏感信息。", "僅準備諮詢訊息，不會自動傳送、提交工單或退款。勿提供完整卡密、密碼或付款金鑰；截圖請遮擋敏感資訊。", "This only prepares an enquiry; it does not send messages, file tickets or issue refunds. Do not share full codes, passwords or payment keys; redact sensitive details in screenshots.")
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新售后信息", "重新整理售後資訊", "Refresh support info"), CallbackData: supportCallback(order.OrderID, code, page, reason)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 订单详情", "‹ 訂單詳情", "‹ Order details"), CallbackData: orderViewCallback(order.OrderID, code, page)}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "刷新售后信息", "重新整理售後資訊", "Refresh support"), CallbackData: supportCallback(order.OrderID, code, page, reason)},
+		{Text: tr(locale, "‹ 订单详情", "‹ 訂單詳情", "‹ Order details"), CallbackData: orderViewCallback(order.OrderID, code, page)},
+	})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, messageID > 0)
+}
+
+// Short button labels; the full issue description remains in the visible draft.
+func supportIssueLabel(locale, reason string) string {
+	switch reason {
+	case "p":
+		return tr(locale, "支付问题", "付款問題", "Payment")
+	case "d":
+		return tr(locale, "交付 / 使用", "交付 / 使用", "Delivery / usage")
+	case "r":
+		return tr(locale, "退款咨询", "退款諮詢", "Refund query")
+	default:
+		return tr(locale, "其他咨询", "其他諮詢", "Other help")
+	}
 }
 
 func supportGuidance(locale, status string) string {

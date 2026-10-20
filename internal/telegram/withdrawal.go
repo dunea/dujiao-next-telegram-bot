@@ -86,7 +86,7 @@ func withdrawalChannelAllowed(channels []string, selected string) bool {
 func withdrawalResultKeyboard(locale string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "查看提现记录", "查看提領紀錄", "Withdrawal history"), CallbackData: "affwithdraws:1"}},
-		{{Text: tr(locale, "‹ 返回推广中心", "‹ 返回推廣中心", "‹ Affiliate center"), CallbackData: "affiliate"}},
+		affiliateHomeButtons(locale),
 	}}
 }
 
@@ -147,10 +147,11 @@ func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session
 		text += tr(locale, "请回复本条消息输入提现金额，大于 0、最多两位小数，不得低于门槛或超过可用佣金。发送 /back 返回推广中心，/cancel 取消。", "請回覆本則訊息輸入提領金額，大於 0、最多兩位小數，不得低於門檻或超過可用佣金。傳送 /back 返回推廣中心，/cancel 取消。", "Reply with an amount greater than zero, with up to two decimal places, between the minimum and your available commission. Send /back for the affiliate center or /cancel to cancel.")
 	case "channel":
 		text += tr(locale, "请选择商店允许的提现渠道：", "請選擇商店允許的提領管道：", "Choose a store-supported withdrawal channel:")
-		rows := make([][]models.InlineKeyboardButton, 0, len(draft.Channels)+1)
+		var choices []models.InlineKeyboardButton
 		for index, channel := range draft.Channels {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: channel, CallbackData: fmt.Sprintf("wd:%s:channel:%d", draft.ID, index)}})
+			choices = append(choices, models.InlineKeyboardButton{Text: channel, CallbackData: fmt.Sprintf("wd:%s:channel:%d", draft.ID, index)})
 		}
+		rows := compactActionRows(choices)
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 上一步", "‹ 上一步", "‹ Back"), CallbackData: "wd:" + draft.ID + ":back"}, {Text: tr(locale, "取消", "取消", "Cancel"), CallbackData: "wd:" + draft.ID + ":cancel"}})
 		markup = models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	case "custom_channel":
@@ -163,8 +164,8 @@ func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session
 		text += tr(locale, "提交后将交由商店审核，不代表已打款。账号、地址和网络正确性需自行确认；本地只做通用格式校验。", "送出後將交由商店審核，不代表已匯款。帳號、地址與網路正確性需自行確認；本機僅做通用格式校驗。", "Submission requests merchant review; it does not mean funds have been paid. Verify the account, address and network. Only general format checks are performed locally.")
 		markup = models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: tr(locale, "确认提交提现申请", "確認送出提領申請", "Confirm withdrawal request"), CallbackData: "wd:" + draft.ID + ":confirm"}},
-			{{Text: tr(locale, "修改收款信息", "修改收款資訊", "Edit receiving details"), CallbackData: "wd:" + draft.ID + ":back"}, {Text: tr(locale, "重新填写", "重新填寫", "Start over"), CallbackData: "wd:" + draft.ID + ":restart"}},
-			{{Text: tr(locale, "取消", "取消", "Cancel"), CallbackData: "wd:" + draft.ID + ":cancel"}},
+			{{Text: tr(locale, "修改收款信息", "修改收款資訊", "Edit account"), CallbackData: "wd:" + draft.ID + ":back"}, {Text: tr(locale, "重新填写", "重新填寫", "Start over"), CallbackData: "wd:" + draft.ID + ":restart"}},
+			{{Text: tr(locale, "取消填写", "取消填寫", "Cancel input"), CallbackData: "wd:" + draft.ID + ":cancel"}, {Text: tr(locale, "退出并查看记录", "離開並查看紀錄", "Exit to history"), CallbackData: "affwithdraws:1"}},
 		}}
 	default:
 		return

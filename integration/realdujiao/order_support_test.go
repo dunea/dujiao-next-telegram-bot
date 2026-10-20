@@ -84,9 +84,11 @@ func TestTelegramOrderSupport(t *testing.T) {
 	assertDraft(view, "订单咨询")
 	f.click(view, button(view, "support:", ":g"))
 	help := f.waitButton("support:")
+	assertCommerceKeyboard(t, help, "url", "support:", "order:")
 	assertDraft(help, "订单咨询")
 	f.click(help, button(help, "support:", ":d"))
 	help = f.waitText("交付或使用问题")
+	assertCommerceKeyboard(t, help, "url", "support:", "order:")
 	assertDraft(help, "交付或使用问题")
 	copied := false
 	for _, b := range supportButtons(help) {
@@ -108,6 +110,7 @@ func TestTelegramOrderSupport(t *testing.T) {
 		f.supportConfig(target)
 		f.click(help, button(help, "support:", ":g"))
 		help = f.waitText("订单售后")
+		assertCommerceKeyboard(t, help, "", "support:", "order:")
 		if target == "" {
 			if !strings.Contains(help.Text, "尚未配置") {
 				t.Fatal("missing contact not explained")

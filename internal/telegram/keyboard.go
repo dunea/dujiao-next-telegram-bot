@@ -38,3 +38,10 @@ func shopHomeButtons(locale string) []models.InlineKeyboardButton {
 		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
 	}
 }
+
+func affiliateHomeButtons(locale string) []models.InlineKeyboardButton {
+	return []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 推广中心", "‹ 推廣中心", "‹ Affiliate"), CallbackData: "affiliate"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	}
+}

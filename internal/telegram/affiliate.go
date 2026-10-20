@@ -77,7 +77,11 @@ func (a *App) showAffiliate(ctx context.Context, chatID, userID int64, edit bool
 	if !a.affiliatePrivateChat(ctx, chatID, userID) {
 		return
 	}
-	locale := a.sessions.Get(userID).Locale
+	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, chatID, state.Err) {
+		return
+	}
+	locale := state.Locale
 	dashboard, err := a.api.AffiliateDashboard(ctx, strconv.FormatInt(userID, 10))
 	if err != nil {
 		a.affiliateFailure(ctx, chatID, userID, err)
@@ -89,6 +93,7 @@ func (a *App) showAffiliate(ctx context.Context, chatID, userID int64, edit bool
 		text += tr(locale, "尚未开通推广。开通后可获取专属链接，佣金规则及结算以商店设置为准。", "尚未開通推廣。開通後可取得專屬連結，佣金規則及結算以商店設定為準。", "Your affiliate profile is not open. Open it to get a referral link. Commission and settlement rules are set by the store.")
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "开通推广", "開通推廣", "Open affiliate profile"), CallbackData: "affopen"}})
 	} else {
+		var actions []models.InlineKeyboardButton
 		currency, ok := a.affiliateCurrency(ctx, chatID, userID)
 		if !ok {
 			return
@@ -103,6 +108,7 @@ func (a *App) showAffiliate(ctx context.Context, chatID, userID int64, edit bool
 			text += tr(locale, "专属 Bot 链接：", "專屬 Bot 連結：", "Your Bot referral link: ") + "\n<code>" + html.EscapeString(link) + "</code>\n"
 			shareURL := "https://t.me/share/url?" + url.Values{"url": {link}}.Encode()
 			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "分享推广链接", "分享推廣連結", "Share referral link"), URL: shareURL}})
+			actions = append(actions, models.InlineKeyboardButton{Text: tr(locale, "📋 复制链接", "📋 複製連結", "📋 Copy link"), CopyText: &models.CopyTextButton{Text: link}})
 		} else {
 			text += tr(locale, "暂时无法生成 Bot 链接，请稍后刷新。", "暫時無法產生 Bot 連結，請稍後重新整理。", "The Bot link is unavailable. Refresh later.") + "\n"
 		}
@@ -112,8 +118,13 @@ func (a *App) showAffiliate(ctx context.Context, chatID, userID int64, edit bool
 		text += "\n" + tr(locale, "已提现佣金：", "已提領佣金：", "Withdrawn commission: ") + affiliateMoney(dashboard.WithdrawnCommission, currency)
 		text += "\n" + tr(locale, "最低提现：", "最低提領：", "Minimum withdrawal: ") + affiliateMoney(dashboard.MinWithdrawAmount.String(), currency)
 		text += "\n\n" + tr(locale, "数据及归因以商店为准；自购、退款和结算规则由商店校验。提现申请需商店审核，不代表已打款。", "資料與歸因以商店為準；自購、退款與結算規則由商店校驗。提領申請需商店審核，不代表已匯款。", "Attribution and figures come from the store, which validates self-purchases, refunds and settlement. Withdrawal requests require merchant review and do not mean funds have been paid.")
+		apply := models.InlineKeyboardButton{Text: tr(locale, "申请提现", "申請提領", "Request withdrawal"), CallbackData: "affapply"}
+		if state.WithdrawalGuard != nil {
+			apply = models.InlineKeyboardButton{Text: tr(locale, "核对提现记录", "核對提領紀錄", "Check withdrawals"), CallbackData: "affwithdraws:1"}
+		}
+		actions = append(actions, apply)
+		rows = append(rows, compactActionRows(actions)...)
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "佣金明细", "佣金明細", "Commissions"), CallbackData: "affcomm:1"}, {Text: tr(locale, "提现记录", "提領紀錄", "Withdrawals"), CallbackData: "affwithdraws:1"}})
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "申请提现", "申請提領", "Request withdrawal"), CallbackData: "affapply"}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新", "重新整理", "Refresh"), CallbackData: "affiliate"}, {Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"}})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
@@ -209,7 +220,19 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 			text += "\n\n" + tr(locale, "当前页没有提现记录。", "目前頁面沒有提領紀錄。", "No withdrawals on this page.")
 		}
 	}
-	rows := [][]models.InlineKeyboardButton{}
+	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, chatID, state.Err) {
+		return
+	}
+	other := models.InlineKeyboardButton{Text: tr(locale, "提现记录", "提領紀錄", "Withdrawals"), CallbackData: "affwithdraws:1"}
+	if kind == "affwithdraws" {
+		other = models.InlineKeyboardButton{Text: tr(locale, "佣金明细", "佣金明細", "Commissions"), CallbackData: "affcomm:1"}
+	}
+	apply := models.InlineKeyboardButton{Text: tr(locale, "申请提现", "申請提領", "Request withdrawal"), CallbackData: "affapply"}
+	if state.WithdrawalGuard != nil {
+		apply = models.InlineKeyboardButton{Text: tr(locale, "刷新记录", "重新整理紀錄", "Refresh history"), CallbackData: fmt.Sprintf("%s:%d", kind, page)}
+	}
+	rows := compactActionRows([]models.InlineKeyboardButton{apply, other})
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
 		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("%s:%d", kind, page-1)})
@@ -221,10 +244,6 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 		rows = append(rows, pager)
 	}
 	if kind == "affwithdraws" {
-		state := a.sessions.Get(userID)
-		if !a.sessionOK(ctx, chatID, state.Err) {
-			return
-		}
 		if guard := state.WithdrawalGuard; guard != nil && guard.Status == "unknown" {
 			text += "\n\n" + tr(locale, "⚠️ 上一笔申请结果不明。记录可能尚未更新，请联系商家核对；仅在确认可以重新申请后，才解除本地重试保护。解除保护不会撤回商店中的申请。", "⚠️ 上一筆申請結果不明。紀錄可能尚未更新，請聯絡商家核對；僅在確認可以重新申請後，才解除本機重試保護。解除保護不會撤回商店中的申請。", "⚠️ A previous request has an unknown result. History may be delayed. Contact the store and clear local retry protection only after verifying that you can apply again. This does not cancel a store-side request.")
 			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已核对，解除重试保护", "已核對，解除重試保護", "Reviewed; clear retry protection"), CallbackData: "wdack:" + guard.ID}})
@@ -238,7 +257,7 @@ func (a *App) showAffiliateRecords(ctx context.Context, chatID int64, messageID 
 			}
 		}
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回推广中心", "‹ 返回推廣中心", "‹ Affiliate center"), CallbackData: "affiliate"}})
+	rows = append(rows, affiliateHomeButtons(locale))
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
