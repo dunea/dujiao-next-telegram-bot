@@ -1267,11 +1267,11 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 			{Text: tr(locale, "📦 我的订单", "📦 我的訂單", "📦 My orders"), CallbackData: "orders:1"},
 			{Text: tr(locale, "💰 余额", "💰 餘額", "💰 Wallet"), CallbackData: "wallet"},
 		},
+		{{Text: tr(locale, "🤝 推广中心", "🤝 推廣中心", "🤝 Affiliate"), CallbackData: "affiliate"}},
 		{
 			{Text: tr(locale, "🌐 语言", "🌐 語言", "🌐 Language"), CallbackData: "lang"},
 			{Text: tr(locale, "❓ 帮助", "❓ 幫助", "❓ Help"), CallbackData: "help"},
 		},
-		{{Text: tr(locale, "🤝 推广中心", "🤝 推廣中心", "🤝 Affiliate"), CallbackData: "affiliate"}},
 	}
 	config := a.botConfig()
 	var rows [][]models.InlineKeyboardButton
@@ -1280,11 +1280,51 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 	} else {
 		rows = configuredMenuRows(config.Menu.Items, locale)
 	}
-	if contact := orderSupportTarget(config.Basic.SupportURL, ""); contact.URL != "" {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: contact.URL}})
+	announcement := models.InlineKeyboardButton{Text: tr(locale, "🔔 公告订阅", "🔔 公告訂閱", "🔔 Announcements"), CallbackData: "bcsubscriptions"}
+	var buttons []models.InlineKeyboardButton
+	announcementAdded := false
+	for _, row := range rows {
+		for _, button := range row {
+			buttons = append(buttons, button)
+			if button.CallbackData == "affiliate" && !announcementAdded {
+				buttons = append(buttons, announcement)
+				announcementAdded = true
+			}
+		}
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📣 公告订阅", "📣 公告訂閱", "📣 Announcements"), CallbackData: "bcsubscriptions"}})
-	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	if !announcementAdded {
+		buttons = append(buttons, announcement)
+	}
+	if contact := orderSupportTarget(config.Basic.SupportURL, ""); contact.URL != "" {
+		buttons = append(buttons, models.InlineKeyboardButton{Text: tr(locale, "💬 联系客服", "💬 聯絡客服", "💬 Support"), URL: contact.URL})
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: compactHomeMenuRows(buttons)}
+}
+
+// Keep shopping prominent, pair short secondary actions, and avoid squeezing
+// merchant-defined long labels. Merchant labels, actions and relative order stay intact.
+func compactHomeMenuRows(buttons []models.InlineKeyboardButton) [][]models.InlineKeyboardButton {
+	var rows [][]models.InlineKeyboardButton
+	var pair []models.InlineKeyboardButton
+	flush := func() {
+		if len(pair) > 0 {
+			rows = append(rows, pair)
+			pair = nil
+		}
+	}
+	for _, button := range buttons {
+		if button.CallbackData == "cats" || len([]rune(button.Text)) > 18 {
+			flush()
+			rows = append(rows, []models.InlineKeyboardButton{button})
+			continue
+		}
+		pair = append(pair, button)
+		if len(pair) == 2 {
+			flush()
+		}
+	}
+	flush()
+	return rows
 }
 
 func configuredMenuRows(items []dujiao.BotMenuItem, locale string) [][]models.InlineKeyboardButton {

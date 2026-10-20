@@ -4,6 +4,7 @@ package realdujiao
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -29,7 +30,31 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	secrets := []string{"SYNTHETIC-JOURNEY-A<&>", "SYNTHETIC-JOURNEY-B"}
 	s.admin("POST", "/card-secrets/batch", s.login(), map[string]any{"product_id": automatic.ID, "sku_id": p.SKUs[0].ID, "secrets": secrets}, nil)
 	f.command("/start")
-	f.waitText("欢迎")
+	home := f.waitText("欢迎")
+	var homeMenu struct {
+		Rows [][]supportButton `json:"inline_keyboard"`
+	}
+	if json.Unmarshal(home.Keyboard, &homeMenu) != nil {
+		t.Fatal("invalid home keyboard sent through Telegram SDK")
+	}
+	hasPair, hasShop := false, false
+	for _, row := range homeMenu.Rows {
+		if len(row) == 0 || len(row) > 2 {
+			t.Fatal("home menu has invalid column count")
+		}
+		hasPair = hasPair || len(row) == 2
+		for _, b := range row {
+			if b.Data == "cats" {
+				hasShop = true
+				if len(row) != 1 {
+					t.Fatal("shopping entry is not full width")
+				}
+			}
+		}
+	}
+	if !hasPair || !hasShop {
+		t.Fatal("home layout is not compact or lost shopping")
+	}
 	f.command("/recharge")
 	menu := f.waitButton("rechargepick:")
 	f.command("100")
