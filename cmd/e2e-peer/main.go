@@ -125,6 +125,9 @@ func (p *peer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.updateID++
+		if update.Message != nil {
+			p.sequence = max(p.sequence, update.Message.ID)
+		}
 		update.ID = int64(p.updateID)
 		p.updates = append(p.updates, update)
 		write(w, map[string]int{"update_id": p.updateID})

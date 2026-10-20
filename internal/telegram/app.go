@@ -212,6 +212,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleCouponMessage(ctx, message)
 		return
 	}
+	if state.Flow == "purchase_quantity" && !navigating {
+		a.handleQuantityMessage(ctx, message)
+		return
+	}
 	if state.Flow == "gift_card" && !navigating {
 		a.handleGiftCardMessage(ctx, message)
 		return
@@ -220,7 +224,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleWithdrawalMessage(ctx, message)
 		return
 	}
-	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Withdrawal != nil) {
+	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Quantity != nil || state.Withdrawal != nil) {
 		if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(message.From.ID)) {
 			return
 		}
@@ -373,6 +377,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := state.Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "qtyinput" || parts[0] == "qtyback" || parts[0] == "qtyedit" {
+		a.handleQuantityCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "wd" || parts[0] == "wdack" {
 		a.handleWithdrawalCallback(ctx, query, parts)
 		return
@@ -416,6 +424,13 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			skuID, _ := strconv.ParseUint(parts[2], 10, 64)
 			quantity, _ := strconv.Atoi(parts[3])
 			a.showQuantitySelector(ctx, message.Chat.ID, message.ID, query.From.ID, uint(productID), uint(skuID), quantity)
+		}
+	case "productinfo":
+		if len(parts) == 4 {
+			productID, _ := strconv.ParseUint(parts[1], 10, 64)
+			skuID, _ := strconv.ParseUint(parts[2], 10, 64)
+			quantity, _ := strconv.Atoi(parts[3])
+			a.showProductInfo(ctx, message.Chat.ID, message.ID, query.From.ID, uint(productID), uint(skuID), quantity)
 		}
 	case "buy":
 		if len(parts) == 4 {
@@ -587,6 +602,15 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 		a.apiFailure(ctx, chatID, locale, "get product", err)
 		return
 	}
+	if len(product.SKUs) <= 1 {
+		var skuID uint
+		if len(product.SKUs) == 1 {
+			skuID = product.SKUs[0].ID
+		}
+		minimum, _ := purchaseQuantityLimits(product)
+		a.publishQuantitySelector(ctx, chatID, messageID, userID, product, skuID, minimum, edit)
+		return
+	}
 	price := product.PriceFrom
 	if product.MemberPriceFrom != "" {
 		price = product.MemberPriceFrom
@@ -659,53 +683,7 @@ func (a *App) showQuantitySelector(ctx context.Context, chatID int64, messageID 
 		a.apiFailure(ctx, chatID, locale, "get product quantity options", err)
 		return
 	}
-	minimum, maximum, available := purchaseQuantityBounds(product, skuID)
-	if !available {
-		text := tr(locale, "该商品或规格库存不足，暂时无法购买。", "該商品或規格庫存不足，暫時無法購買。", "This product or option does not have enough stock.")
-		a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}}}})
-		return
-	}
-	quantity = clampPurchaseQuantity(quantity, minimum, maximum)
-	selection := selectedSKU(product, skuID)
-	price := product.PriceFrom
-	name := product.Title
-	if selection != nil {
-		name += " · " + skuLabel(*selection)
-		price = selection.Price
-		if selection.MemberPrice != "" {
-			price = selection.MemberPrice
-		}
-	} else if product.MemberPriceFrom != "" {
-		price = product.MemberPriceFrom
-	}
-	text := "<b>" + html.EscapeString(name) + "</b>"
-	if price != "" {
-		text += "\n\n" + tr(locale, "单价：", "單價：", "Unit price: ") + html.EscapeString(price+" "+product.Currency)
-	}
-	text += fmt.Sprintf("\n%s<b>%d</b>", tr(locale, "数量：", "數量：", "Quantity: "), quantity)
-	if maximum > 0 {
-		text += fmt.Sprintf("\n%s%d–%d", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum, maximum)
-	} else {
-		text += fmt.Sprintf("\n%s%d+", tr(locale, "可选范围：", "可選範圍：", "Allowed range: "), minimum)
-	}
-	decreaseCallback := "none"
-	if quantity > minimum {
-		decreaseCallback = fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity-1)
-	}
-	increaseCallback := "none"
-	if maximum == 0 || quantity < maximum {
-		increaseCallback = fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity+1)
-	}
-	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{
-			{Text: "−", CallbackData: decreaseCallback},
-			{Text: fmt.Sprintf("%d", quantity), CallbackData: "none"},
-			{Text: "+", CallbackData: increaseCallback},
-		},
-		{{Text: tr(locale, "立即购买", "立即購買", "Buy now"), CallbackData: fmt.Sprintf("buy:%d:%d:%d", productID, skuID, quantity)}},
-		{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}},
-	}}
-	a.edit(ctx, chatID, messageID, text, keyboard)
+	a.publishQuantitySelector(ctx, chatID, messageID, userID, product, skuID, quantity, true)
 }
 
 func (a *App) validatePurchaseQuantity(ctx context.Context, chatID int64, messageID int, userID int64, locale string, productID, skuID uint, quantity int) bool {
@@ -780,7 +758,9 @@ func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID in
 		}
 		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(preview.Currency))
 	}
-	if preview.OriginalAmount != "" {
+	original, originalOK := money.Parse(preview.OriginalAmount)
+	total, totalOK := money.Parse(preview.TotalAmount)
+	if preview.OriginalAmount != "" && (!originalOK || !totalOK || original != total) {
 		text += "\n\n" + tr(locale, "原价：", "原價：", "Original amount: ") + html.EscapeString(preview.OriginalAmount+" "+preview.Currency)
 	}
 	for _, discount := range []struct{ label, amount string }{
@@ -810,7 +790,8 @@ func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID in
 	parts := strings.Split(confirmCallback, ":")
 	if len(parts) == 3 {
 		rows := couponButtons(locale, parts[1], parts[2], request.CouponCode)
-		keyboard.InlineKeyboard = append(rows, keyboard.InlineKeyboard...)
+		rows[0] = append(rows[0], models.InlineKeyboardButton{Text: tr(locale, "修改数量", "修改數量", "Edit quantity"), CallbackData: "qtyedit:" + parts[1] + ":" + parts[2]})
+		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard[:1], append(rows, keyboard.InlineKeyboard[1:]...)...)
 	}
 	a.edit(ctx, chatID, messageID, text, keyboard)
 	return preview, nil

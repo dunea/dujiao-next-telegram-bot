@@ -59,8 +59,6 @@ func TestTelegramAutoDelivery(t *testing.T) {
 		f.click(menu, button(menu, fmt.Sprintf("cat:%d:", category.ID), ""))
 		menu = f.waitButton("product:")
 		f.click(menu, button(menu, "product:", fmt.Sprint(product.ID)))
-		menu = f.waitButton("qty:")
-		f.click(menu, button(menu, fmt.Sprintf("qty:%d:%d:", product.ID, sku), ":1"))
 		menu = f.waitButton("buy:")
 		if quantity == 2 {
 			f.click(menu, button(menu, "qty:", ":2"))

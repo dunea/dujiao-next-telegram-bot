@@ -14,6 +14,10 @@ make real-upstream-test           # 三个官方版本的升级/恢复，不等�
 
 需要 Go、可用的本机 Unix socket Docker daemon；SQLite 路径还需 `sqlite3`。首次拉取固定镜像和构建测试镜像需要联网。CI 在两个真实上游数据库任务中串行执行升级链和 E2E；Go 任务另验证真实 Redis AOF 停启恢复。CI 仅上传测试摘要，不上传商店数据库、配置、后台日志、审计全文或 peer 状态文件。
 
+## 批量数量与购买交互专项
+
+`TestTelegramBulkQuantity` 同属 `make telegram-e2e`：真实单规格商品直接打开数量卡片，通过 Telegram 输入 2500，再在预览修改为 5000；验证真实价格 25.00→50.00、输入/预览阶段无订单、旧确认失效，只有新确认创建一单，不创建支付。它验证数量/预览链路，不代表数千份真实交付或大文件发送已通过。
+
 ## 全链路实际断言
 
 注入 Telegram `getUpdates`，由真实 SDK 轮询和处理按钮，不直接调用交互处理函数：

@@ -190,7 +190,7 @@ func (r *Redis) Update(uid int64, update func(*State)) State {
 	draft.Locale, draft.WithdrawalGuard = "", nil
 	var body []byte
 	ttl := 24 * time.Hour
-	if draft.Flow != "" || draft.Purchase != nil || draft.GiftCard != nil || draft.Recharge != nil || draft.Withdrawal != nil {
+	if draft.Flow != "" || draft.Purchase != nil || draft.GiftCard != nil || draft.Recharge != nil || draft.Quantity != nil || draft.Withdrawal != nil {
 		for _, expiry := range draftExpiries(draft) {
 			if remaining := expiry.Sub(r.now()); remaining < ttl {
 				ttl = remaining
@@ -221,6 +221,11 @@ func (r *Redis) Update(uid int64, update func(*State)) State {
 
 func draftExpiries(state State) []time.Time {
 	var times []time.Time
+	// A short quantity-edit prompt must not discard its existing, longer-lived
+	// purchase form/coupon. normalizeState expires the linked prompt separately.
+	if state.Quantity != nil && (state.Purchase == nil || state.Quantity.PurchaseID != state.Purchase.ID) {
+		times = append(times, state.Quantity.ExpiresAt)
+	}
 	if state.Purchase != nil {
 		times = append(times, state.Purchase.ExpiresAt)
 	}

@@ -20,8 +20,24 @@ type State struct {
 	Purchase        *PurchaseDraft
 	GiftCard        *GiftCardInput
 	Recharge        *RechargeDraft
+	Quantity        *QuantityInput
 	Withdrawal      *WithdrawalDraft
 	WithdrawalGuard *WithdrawalGuard
+}
+
+// QuantityInput contains only UI metadata, never a submitted order. A fresh ID
+// and prompt bind typed quantities to one private chat and checkout revision.
+type QuantityInput struct {
+	ID               string
+	ChatID           int64
+	MessageID        int
+	PromptID         int
+	ProductID        uint
+	SKUID            uint
+	Quantity         int
+	PurchaseID       string
+	PurchaseRevision int
+	ExpiresAt        time.Time
 }
 
 type WithdrawalDraft struct {
@@ -93,6 +109,10 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.Quantity != nil {
+		input := *state.Quantity
+		state.Quantity = &input
+	}
 	if state.Withdrawal != nil {
 		draft := *state.Withdrawal
 		draft.Channels = slices.Clone(draft.Channels)
@@ -166,6 +186,12 @@ type Store interface {
 }
 
 func normalizeState(state State, now time.Time) State {
+	if state.Quantity != nil && !now.Before(state.Quantity.ExpiresAt) {
+		state.Quantity = nil
+		if state.Flow == "purchase_quantity" {
+			state.Flow = ""
+		}
+	}
 	if guard := state.WithdrawalGuard; guard != nil && (guard.Status == "checking" || guard.Status == "posting") && !guard.LeaseUntil.IsZero() && !now.Before(guard.LeaseUntil) {
 		guard.Status, guard.ReviewMessageID = "unknown", 0
 		state.Withdrawal = nil
@@ -233,6 +259,7 @@ func resetFlow(state *State) {
 	state.Purchase = nil
 	state.GiftCard = nil
 	state.Recharge = nil
+	state.Quantity = nil
 	state.Withdrawal = nil
 }
 

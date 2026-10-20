@@ -170,8 +170,6 @@ func TestTelegramEndToEnd(t *testing.T) {
 	flow.click(menu, button(menu, "cat:", ""))
 	menu = flow.waitButton("product:")
 	flow.click(menu, button(menu, "product:", ""))
-	menu = flow.waitButton("qty:")
-	flow.click(menu, button(menu, "qty:", ""))
 	menu = flow.waitButton("buy:")
 	flow.click(menu, button(menu, "buy:", ""))
 	menu = flow.waitButton("formconfirm:")
@@ -306,6 +304,10 @@ func (f *telegramFlow) state() peerState {
 	return result
 }
 func (f *telegramFlow) command(text string) {
+	// Incoming and outgoing messages share one Telegram private-chat sequence.
+	for _, m := range f.state().Messages {
+		f.inputID = max(f.inputID, m.ID)
+	}
 	f.inputID++
 	f.control("/test/update", map[string]any{"message": map[string]any{"message_id": f.inputID, "date": time.Now().Unix(), "chat": map[string]any{"id": buyerID, "type": "private"}, "from": map[string]any{"id": buyerID, "is_bot": false, "first_name": "Synthetic", "language_code": "zh-hans"}, "text": text}}, nil)
 }
