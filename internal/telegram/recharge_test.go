@@ -21,6 +21,22 @@ type rechargeTestRequest struct {
 	ChannelID     uint   `json:"channel_id"`
 }
 
+func TestPlainRechargeAmountSendsChannelsBelowInput(t *testing.T) {
+	app, f := newFormFixture(t, nil)
+	app.askRechargeAmount(context.Background(), 42, 42, false, 0)
+	previous := app.sessions.Get(42).Recharge
+	f.nextID.Store(500)
+	app.handleUpdate(context.Background(), nil, giftCardMessage("100", 0, 42, 42))
+	current := app.sessions.Get(42).Recharge
+	if current == nil || current.MessageID <= 500 || current.MessageID == previous.MessageID || current.Amount != "100.00" || f.methods[len(f.methods)-1] != "sendMessage" || len(f.rechargeRequests) != 0 {
+		t.Fatal("typed amount edited an old menu or submitted recharge without channel selection")
+	}
+	formCallback(app, 42, previous.MessageID, "rechargepick:"+previous.ID+":100.00")
+	if app.sessions.Get(42).Recharge.ID != current.ID || len(f.rechargeRequests) != 0 {
+		t.Fatal("old amount buttons changed current recharge")
+	}
+}
+
 func rechargePick(app *App, value string) {
 	draft := app.sessions.Get(42).Recharge
 	formCallback(app, 42, draft.MessageID, "rechargepick:"+draft.ID+":"+value)

@@ -87,6 +87,17 @@ func TestQuantityCardIsCompactAndKeepsCheckoutExplicit(t *testing.T) {
 	}
 }
 
+func TestQuantityCardExplainsDeliveryBeforeCheckout(t *testing.T) {
+	_, f := quantityFixture(t)
+	for _, tc := range []struct{ kind, expected string }{{"auto", "自动发货 · 付款后领取 TXT"}, {"manual", "人工交付 · 付款后等待商家处理"}} {
+		f.product.FulfillmentType = tc.kind
+		text, _ := quantityCard("zh-CN", f.product, 31, 1, "id")
+		if !strings.Contains(text, tc.expected) {
+			t.Fatal("missing delivery expectation", tc.kind)
+		}
+	}
+}
+
 func TestLongProductDetailsAreOptionalAndReturnToSelectedQuantity(t *testing.T) {
 	a, f := quantityFixture(t)
 	f.product.Description = strings.Repeat("说明", 200) + "DETAIL-END<&>"
@@ -142,6 +153,36 @@ func TestTypedBulkQuantityDoesNotOrderUntilConfirmation(t *testing.T) {
 	}
 }
 
+func TestTypedQuantityAndErrorsAreNewMessagesBelowInput(t *testing.T) {
+	a, f := quantityFixture(t)
+	q := openQuantityInput(a)
+	f.nextID.Store(500)
+	quantityReply(a, "0", q.PromptID)
+	retry := a.sessions.Get(42).Quantity
+	if retry == nil || retry.PromptID <= 500 || f.methods[len(f.methods)-1] != "sendMessage" {
+		t.Fatal("validation error edited the old prompt instead of replying below input")
+	}
+	f.nextID.Store(600)
+	a.handleQuantityMessage(context.Background(), &models.Message{ID: 600, From: &models.User{ID: 42}, Chat: models.Chat{ID: 42}, Text: "2500", ReplyToMessage: &models.Message{ID: retry.PromptID}})
+	selected := a.sessions.Get(42).Quantity
+	if selected == nil || selected.MessageID <= retry.PromptID || f.methods[len(f.methods)-1] != "sendMessage" || len(f.orders) != 0 {
+		t.Fatal("quantity result not sent as a fresh, explicit next step")
+	}
+	formCallback(a, 42, retry.PromptID, "qtyback:"+retry.ID)
+	if a.sessions.Get(42).Quantity.ID != selected.ID {
+		t.Fatal("old prompt changed current selection")
+	}
+	formCallback(a, 42, selected.MessageID, "buy:3:31:2500")
+	draft := a.sessions.Get(42).Purchase
+	formCallback(a, 42, draft.PreviewID, fmt.Sprintf("qtyedit:%s:%d", draft.ID, draft.Revision))
+	q = a.sessions.Get(42).Quantity
+	f.nextID.Store(700)
+	a.handleQuantityMessage(context.Background(), &models.Message{ID: 700, From: &models.User{ID: 42}, Chat: models.Chat{ID: 42}, Text: "5000"})
+	if got := a.sessions.Get(42).Purchase; got == nil || !got.Ready || got.PreviewID <= 700 || got.Quantity != 5000 || len(f.orders) != 0 {
+		t.Fatal("quantity edit re-used a preview above the reply or created an order")
+	}
+}
+
 func TestTypedQuantityRechecksStockLimitsAndInvalidInput(t *testing.T) {
 	for _, input := range []string{"0", "1.5", "2,500", "10001", "999999999999999999999"} {
 		t.Run(input, func(t *testing.T) {
@@ -164,7 +205,7 @@ func TestTypedQuantityRechecksStockLimitsAndInvalidInput(t *testing.T) {
 	if a.sessions.Get(42).Flow != "purchase_quantity" {
 		t.Fatal("stock change silently clamped an exact typed quantity")
 	}
-	quantityReply(a, "100", q.PromptID)
+	quantityReply(a, "100", a.sessions.Get(42).Quantity.PromptID)
 	if a.sessions.Get(42).Quantity.Quantity != 100 {
 		t.Fatal("valid retry failed")
 	}

@@ -191,6 +191,17 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 func pendingClick(a *App, uid, chat int64, mid int, data string) {
 	a.handleCallback(context.Background(), &models.CallbackQuery{ID: "pending-test", From: models.User{ID: uid}, Data: data, Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: mid, Chat: models.Chat{ID: chat}}}})
 }
+
+func TestPendingSelectionClearlyRequiresPaymentBeforeDelivery(t *testing.T) {
+	a, f := newPendingFixture(t)
+	pendingClick(a, 42, 42, 10, "resume:7")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	text := strings.Join(f.texts, "\n")
+	if !strings.Contains(text, "当前状态：待支付") || !strings.Contains(text, "付款成功后才会安排交付") || f.posts != 0 || f.order.Status != "pending_payment" {
+		t.Fatal("payment selection implies creation is payment or causes a payment")
+	}
+}
 func pendingAction(t *testing.T, f *pendingFixture, prefix string) string {
 	t.Helper()
 	f.mu.Lock()

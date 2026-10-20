@@ -32,8 +32,11 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	f.waitText("欢迎")
 	f.command("/recharge")
 	menu := f.waitButton("rechargepick:")
-	f.click(menu, button(menu, "rechargepick:", ":100.00"))
+	f.command("100")
 	menu = f.waitButton("rechargepay:")
+	if menu.Method != "sendMessage" || menu.ID <= f.inputID {
+		t.Fatal("typed recharge amount next step is hidden above input")
+	}
 	f.click(menu, button(menu, "rechargepay:", fmt.Sprint(f.paymentChannel)))
 	f.waitText("103.50 CNY")
 	s.wait(func() bool { return len(f.state().Payments) == 1 })
@@ -72,6 +75,9 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	prompt = f.waitText("输入优惠码")
 	f.command("JOURNEY1", prompt)
 	preview = f.waitButton("formconfirm:")
+	if preview.ID <= f.inputID {
+		t.Fatal("coupon result is hidden in an earlier preview")
+	}
 	if !strings.Contains(preview.Text, "19.00 CNY") || !strings.Contains(preview.Text, "journey@example.invalid") {
 		t.Fatal("coupon retry lost form/quantity or price")
 	}

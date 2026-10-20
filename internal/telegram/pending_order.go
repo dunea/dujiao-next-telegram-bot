@@ -249,6 +249,7 @@ func (a *App) presentPaymentMethods(ctx context.Context, chatID int64, mid int, 
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", o.OrderID)}})
 	text := "<b>" + tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method") + "</b>\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + html.EscapeString(truncate(o.OrderNo, 100)) + "\n" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(o.TotalAmount+" "+o.Currency) + "\n" + pendingDeadline(locale, o.ExpiresAt, now)
+	text += "\n\n" + tr(locale, "⏳ 当前状态：待支付。请在下方选择支付方式。\n付款成功后才会安排交付；如已付款，请先刷新核对，勿重复支付。", "⏳ 目前狀態：待付款。請在下方選擇付款方式。\n付款成功後才會安排交付；如已付款，請先重新整理核對，勿重複付款。", "⏳ Status: awaiting payment. Choose a method below.\nDelivery starts after payment. If already paid, refresh first; do not pay twice.")
 	if previousPayment {
 		text += "\n\n" + tr(locale, "原支付记录已不可继续（可能已超时）。如尚未付款，可重新选择方式；如已付款，请先核对，勿重复转账。", "原付款紀錄已無法繼續（可能已逾時）。如尚未付款，可重新選擇方式；如已付款，請先核對，勿重複轉帳。", "The previous payment is no longer available (possibly expired). Choose again only if unpaid; otherwise check your payment account first.")
 	}

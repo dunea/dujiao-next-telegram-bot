@@ -205,10 +205,7 @@ func (s *Service) Run(ctx context.Context) {
 }
 
 func (s *Service) deliver(ctx context.Context, job delivery) {
-	text := fmt.Sprintf("商店运营通知\n事件：%s\n结果：%s\n用户 ID：%d\n资源 ID：%d\n审计 ID：%s", job.event.Action, job.event.Outcome, job.event.UserID, job.event.ResourceID, job.event.id)
-	if job.event.Action == Withdrawal && job.event.Outcome != Succeeded {
-		text += "\n请核对商店提现记录；勿自动重试资金操作。"
-	}
+	text := adminNotification(job.event)
 	for _, adminID := range s.admins {
 		delivered := false
 		for attempt := 0; attempt <= len(s.retryDelays); attempt++ {

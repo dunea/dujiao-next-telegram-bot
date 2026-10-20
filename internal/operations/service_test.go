@@ -66,7 +66,7 @@ func TestNotificationRetriesNeverExposeErrorsAndContinueOtherAdmins(t *testing.T
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("unbounded send")
 		}
-		if !strings.Contains(text, "withdrawal.apply") || !strings.Contains(text, "核对") {
+		if !strings.Contains(text, "申请提现") || !strings.Contains(text, "核对") {
 			t.Fatal("missing safe summary")
 		}
 		calls[uid]++

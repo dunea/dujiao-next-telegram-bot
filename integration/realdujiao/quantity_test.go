@@ -30,8 +30,16 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	}
 	f.click(menu, button(menu, "qtyinput:", ""))
 	f.waitText("请输入购买数量")
+	f.command("0")
+	validation := f.waitText("请输入正整数")
+	if validation.Method != "sendMessage" || validation.ID <= f.inputID {
+		t.Fatal("invalid quantity response is hidden above user input")
+	}
 	f.command("2500")
 	menu = f.waitButton("buy:")
+	if menu.Method != "sendMessage" || menu.ID <= f.inputID {
+		t.Fatal("typed quantity next step is hidden above user input")
+	}
 	if !strings.Contains(menu.Text, "25.00 CNY") || button(menu, "buy:", ":2500") == "" {
 		t.Fatal("typed bulk quantity or estimate not displayed")
 	}
@@ -47,6 +55,9 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	f.waitText("请输入购买数量")
 	f.command("5000")
 	menu = f.waitButton("formconfirm:")
+	if menu.ID <= f.inputID {
+		t.Fatal("edited quantity preview is hidden above user input")
+	}
 	if !strings.Contains(menu.Text, "50.00 CNY") {
 		t.Fatal("edited quantity did not reprice preview")
 	}

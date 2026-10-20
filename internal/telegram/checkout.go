@@ -147,11 +147,13 @@ func (a *App) handleCouponMessage(ctx context.Context, message *models.Message) 
 			current.Revision++
 			current.PromptID = 0
 			current.Ready = false
+			current.PreviewID = 0
 			state.Flow = ""
 			changed = true
 		}
 	})
 	if a.sessionOK(ctx, message.Chat.ID, state.Err) && changed {
+		a.clearInputButtons(ctx, draft.ChatID, draft.PreviewID)
 		a.previewForm(ctx, message.From, state.Purchase)
 	}
 }

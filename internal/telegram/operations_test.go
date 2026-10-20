@@ -40,7 +40,7 @@ func TestWithdrawalAuditAndAdminSummaryContainNoReceivingDetails(t *testing.T) {
 	withdrawalAction(app, "confirm")
 	select {
 	case text := <-fixture.adminSent:
-		if !strings.Contains(text, "withdrawal.apply") || !strings.Contains(text, "succeeded") || strings.Contains(text, "PRIVATE") {
+		if !strings.Contains(text, "申请提现") || !strings.Contains(text, "等待商家审核") || strings.Contains(text, "PRIVATE") {
 			t.Fatal("unsafe/incomplete admin summary", text)
 		}
 	case <-time.After(3 * time.Second):

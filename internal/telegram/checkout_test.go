@@ -19,6 +19,19 @@ func checkoutConfirm(app *App) {
 	formCallback(app, 42, draft.PreviewID, fmt.Sprintf("formconfirm:%s:%d", draft.ID, draft.Revision))
 }
 
+func TestCouponReplyCreatesFreshPreviewBelowInput(t *testing.T) {
+	app, f := newFormFixture(t, nil)
+	formCallback(app, 42, 10, "buy:3:31:1")
+	old := app.sessions.Get(42).Purchase
+	couponAction(app, "edit")
+	f.nextID.Store(500)
+	formReply(app, "SAVE10")
+	draft := app.sessions.Get(42).Purchase
+	if draft == nil || draft.PreviewID <= 500 || draft.PreviewID == old.PreviewID || !draft.Ready || len(f.orders) != 0 {
+		t.Fatal("coupon reply updated an old preview or created an order")
+	}
+}
+
 func TestCouponOrdinaryPurchaseAndStaleConfirmation(t *testing.T) {
 	app, fixture := newFormFixture(t, []dujiao.ManualFormField{})
 	formCallback(app, 42, 10, "buy:3:31:1")

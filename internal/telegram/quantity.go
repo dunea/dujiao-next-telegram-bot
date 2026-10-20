@@ -57,6 +57,11 @@ func quantityCard(locale string, product dujiao.ProductDetail, skuID uint, quant
 		price = product.MemberPriceFrom
 	}
 	text := "<b>" + html.EscapeString(name) + "</b>"
+	if product.FulfillmentType == "auto" {
+		text += "\n" + tr(locale, "⚡ 自动发货 · 付款后领取 TXT", "⚡ 自動發貨 · 付款後領取 TXT", "⚡ Automatic delivery · collect TXT after payment")
+	} else if product.FulfillmentType == "manual" {
+		text += "\n" + tr(locale, "👤 人工交付 · 付款后等待商家处理", "👤 人工交付 · 付款後等待商家處理", "👤 Manual delivery · seller handles it after payment")
+	}
 	if description := strings.TrimSpace(product.Summary); description != "" {
 		text += "\n" + html.EscapeString(truncate(description, 300))
 	} else if product.Description != "" {
@@ -271,7 +276,27 @@ func (a *App) restoreQuantityPrompt(ctx context.Context, userID int64, q *sessio
 }
 
 func (a *App) quantityInputError(ctx context.Context, q *session.QuantityInput, locale, text string) {
-	a.edit(ctx, q.ChatID, q.PromptID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "qtyback:" + q.ID}}}})
+	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: q.ChatID, Text: text, ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "qtyback:" + q.ID}}}}})
+	if err != nil {
+		a.logger.Warn("quantity validation message could not be displayed")
+		return
+	}
+	changed := false
+	stored := a.sessions.Update(q.ChatID, func(s *session.State) {
+		if current := s.Quantity; current != nil && current.ID == q.ID && current.PromptID == q.PromptID && s.Flow == "purchase_quantity" {
+			current.PromptID = message.ID
+			changed = true
+		}
+	})
+	if a.sessionOK(ctx, q.ChatID, stored.Err) && changed {
+		a.clearInputButtons(ctx, q.ChatID, q.PromptID)
+	}
+}
+
+func (a *App) clearInputButtons(ctx context.Context, chatID int64, messageID int) {
+	if messageID > 0 {
+		_, _ = a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{ChatID: chatID, MessageID: messageID})
+	}
 }
 
 func (a *App) handleQuantityMessage(ctx context.Context, message *models.Message) {
@@ -325,7 +350,7 @@ func (a *App) finishQuantityInput(ctx context.Context, user *models.User, q *ses
 			d.Quantity = n
 			d.Ready = false
 			d.Revision++
-			d.PreviewID = q.PromptID
+			d.PreviewID = 0 // A text reply must advance below the user's input.
 		}
 		s.Quantity = nil
 		s.Flow = ""
@@ -334,9 +359,10 @@ func (a *App) finishQuantityInput(ctx context.Context, user *models.User, q *ses
 	if !a.sessionOK(ctx, user.ID, stored.Err) || !claimed {
 		return
 	}
+	a.clearInputButtons(ctx, user.ID, q.PromptID)
 	if q.PurchaseID != "" {
 		a.previewForm(ctx, user, stored.Purchase)
 	} else {
-		a.publishQuantitySelector(ctx, user.ID, q.PromptID, user.ID, product, q.SKUID, n, true)
+		a.publishQuantitySelector(ctx, user.ID, 0, user.ID, product, q.SKUID, n, false)
 	}
 }

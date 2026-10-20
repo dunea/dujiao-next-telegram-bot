@@ -132,7 +132,7 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 		}
 		for _, amount := range rechargePresets {
 			if amount == parts[2] {
-				a.selectRechargeAmount(ctx, userID, draft, amount)
+				a.selectRechargeAmount(ctx, userID, draft, amount, true)
 				return
 			}
 		}
@@ -200,10 +200,10 @@ func (a *App) handleRechargeAmount(ctx context.Context, message *models.Message)
 		a.send(ctx, message.Chat.ID, tr(state.Locale, "金额格式不正确，请输入大于 0、最多两位小数且不超过 1,000,000 的金额。", "金額格式不正確，請輸入大於 0、最多兩位小數且不超過 1,000,000 的金額。", "Enter an amount greater than 0, with up to 2 decimal places and no more than 1,000,000."), nil)
 		return
 	}
-	a.selectRechargeAmount(ctx, message.From.ID, draft, amount)
+	a.selectRechargeAmount(ctx, message.From.ID, draft, amount, false)
 }
 
-func (a *App) selectRechargeAmount(ctx context.Context, userID int64, draft *session.RechargeDraft, amount string) {
+func (a *App) selectRechargeAmount(ctx context.Context, userID int64, draft *session.RechargeDraft, amount string, edit bool) {
 	if a.claimRecharge(userID, draft.ID, draft.MessageID, "recharge_amount") == nil {
 		return
 	}
@@ -237,7 +237,10 @@ func (a *App) selectRechargeAmount(ctx context.Context, userID int64, draft *ses
 	if !a.sessionOK(ctx, draft.ChatID, result.Err) || !changed {
 		return
 	}
-	a.showRechargeChannels(ctx, userID, &next, !draft.Custom)
+	a.showRechargeChannels(ctx, userID, &next, edit)
+	if !edit {
+		a.clearInputButtons(ctx, draft.ChatID, draft.MessageID)
+	}
 }
 
 func (a *App) showRechargeChannels(ctx context.Context, userID int64, draft *session.RechargeDraft, edit bool) {

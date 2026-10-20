@@ -794,6 +794,11 @@ func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID in
 			text += " · " + html.EscapeString(item.SKUName)
 		}
 		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(preview.Currency))
+		if item.FulfillmentType == "auto" {
+			text += "\n" + tr(locale, "交付：付款成功后自动发货，可领取 TXT。", "交付：付款成功後自動發貨，可領取 TXT。", "Delivery: automatic after payment; collect the TXT file.")
+		} else if item.FulfillmentType == "manual" {
+			text += "\n" + tr(locale, "交付：付款后由商家人工处理。", "交付：付款後由商家人工處理。", "Delivery: handled manually by the seller after payment.")
+		}
 	}
 	original, originalOK := money.Parse(preview.OriginalAmount)
 	total, totalOK := money.Parse(preview.TotalAmount)

@@ -27,6 +27,7 @@ type formFixture struct {
 	previews             []dujiao.OrderRequest
 	orders               []dujiao.OrderRequest
 	texts                []string
+	methods              []string
 	chatIDs              []string
 	adminSent            chan string
 	markups              []string
@@ -75,6 +76,7 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 				text := r.FormValue("text")
 				fixture.mu.Lock()
 				fixture.texts = append(fixture.texts, text)
+				fixture.methods = append(fixture.methods, method)
 				fixture.chatIDs = append(fixture.chatIDs, r.FormValue("chat_id"))
 				if fixture.adminSent != nil && r.FormValue("chat_id") == "900001" {
 					select {
