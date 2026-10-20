@@ -7,6 +7,14 @@
 
 > 这是社区项目，不是 Dujiao-Next 官方收费机器人的替代授权，也不隶属于 Telegram。
 
+## 界面预览
+
+左侧为本项目 Telegram Bot 的商品列表、钱包和首页菜单，右侧为对接的 Dujiao-Next 管理后台。
+
+![Telegram 商店机器人与 Dujiao-Next 管理后台界面预览](https://raw.githubusercontent.com/dunea/dujiao-next-telegram-bot/main/docs/images/project-overview.png)
+
+> 图片为开发版测试环境的界面合成示意，商品、余额及统计信息均为演示数据；右侧后台属于 Dujiao-Next，并非本项目另行提供的管理系统。
+
 ## 已实现
 
 - Telegram 用户自动解析和创建，支持 `/start <邀请码>`
