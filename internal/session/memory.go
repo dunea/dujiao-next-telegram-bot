@@ -7,6 +7,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/checkout"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/delivery"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 )
@@ -165,6 +166,7 @@ func cloneState(state State) State {
 }
 
 type Memory struct {
+	checkout      *checkout.Memory
 	deliveries    *delivery.Memory
 	callbacks     *callback.MemoryReceipts
 	broadcast     *broadcast.Memory

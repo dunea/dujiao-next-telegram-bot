@@ -52,6 +52,23 @@ func TestClientSignsAndDecodesRequest(t *testing.T) {
 	}
 }
 
+func TestLatestPaymentUsesOwnerScopedReadOnlyEndpoint(t *testing.T) {
+	c, e := NewClient("https://example.test", "key", "secret", time.Second)
+	if e != nil {
+		t.Fatal(e)
+	}
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != "GET" || r.URL.Path != "/api/v1/channel/payments/latest" || r.URL.Query().Get("channel_user_id") != "42" || r.URL.Query().Get("order_id") != "7" {
+			t.Fatal("latest payment not owner-scoped read")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status_code":0,"data":{"payment_id":8,"order_id":7,"status":"pending","pay_url":"https://payments.example.invalid/original"}}`))}, nil
+	})
+	p, e := c.LatestPayment(context.Background(), "42", 7)
+	if e != nil || p.PaymentID != 8 || p.OrderID != 7 {
+		t.Fatal("latest payment decode failed", e)
+	}
+}
+
 func TestClientReturnsAPIError(t *testing.T) {
 	client, err := NewClient("https://example.test", "key", "secret", time.Second)
 	if err != nil {

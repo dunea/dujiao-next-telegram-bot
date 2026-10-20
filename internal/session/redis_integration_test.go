@@ -9,6 +9,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/checkout"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/delivery"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 )
@@ -29,6 +30,13 @@ func TestRedisAOFRestart(t *testing.T) {
 	ctx := context.Background()
 	switch phase {
 	case "seed":
+		if _, e := r.CheckoutStore().Update(ctx, checkout.Key(85001, 1001), func(s *checkout.State) error {
+			s.PaymentStatus, s.PaymentToken = "unknown", rand.Text()
+			s.CancelStatus = "posting"
+			return nil
+		}); e != nil {
+			t.Fatal("seed checkout guard", e)
+		}
 		for i, status := range []string{"sent", "posting", "retry"} {
 			key := delivery.Key(85001, uint(900+i))
 			if _, err := r.DeliveryReceipts().Update(ctx, key, func(s *delivery.Receipt) error {
@@ -79,6 +87,12 @@ func TestRedisAOFRestart(t *testing.T) {
 		}
 	case "verify":
 		var callbackKeys []string
+		checkoutKey := checkout.Key(85001, 1001)
+		cs, ce := r.CheckoutStore().Update(ctx, checkoutKey, func(*checkout.State) error { return nil })
+		if ce != nil || !checkout.PaymentUncertain(cs) || !checkout.CancelUncertain(cs) {
+			t.Fatal("AOF lost checkout guard", ce)
+		}
+		callbackKeys = append(callbackKeys, r.prefix+":checkout:v1:"+checkoutKey, r.prefix+":checkout:index:v1")
 		for i, status := range []string{"sent", "posting", "retry"} {
 			key := delivery.Key(85001, uint(900+i))
 			s, err := r.DeliveryReceipts().Update(ctx, key, func(*delivery.Receipt) error { return nil })

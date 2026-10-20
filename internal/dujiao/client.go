@@ -186,6 +186,10 @@ func (c *Client) CreatePayment(ctx context.Context, channelUserID string, orderI
 	})
 }
 
+func (c *Client) LatestPayment(ctx context.Context, channelUserID string, orderID uint) (PaymentResult, error) {
+	return get[PaymentResult](ctx, c, "/payments/latest", url.Values{"channel_user_id": {channelUserID}, "order_id": {strconv.FormatUint(uint64(orderID), 10)}})
+}
+
 func get[T any](ctx context.Context, c *Client, path string, query url.Values) (T, error) {
 	return request[T](ctx, c, http.MethodGet, path, query, nil)
 }

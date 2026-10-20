@@ -21,6 +21,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/checkout"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/delivery"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
@@ -44,6 +45,7 @@ type App struct {
 	broadcastEngine *broadcast.Engine
 	broadcastMax    int
 	deliveries      delivery.Store
+	checkout        checkout.Store
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
@@ -55,6 +57,7 @@ type App struct {
 type activePaymentPoll struct {
 	cancel      context.CancelFunc
 	qrMessageID int
+	paymentID   uint
 }
 
 func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocale string, pollTimeout time.Duration, serverURL string, logger *slog.Logger, stores ...session.Store) (*App, error) {
@@ -86,6 +89,9 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		return nil, fmt.Errorf("initialize Telegram bot: %w", err)
 	}
 	app.bot = bot
+	if provider, ok := app.sessions.(interface{ CheckoutStore() checkout.Store }); ok {
+		app.checkout = provider.CheckoutStore()
+	}
 	if provider, ok := app.sessions.(interface{ DeliveryReceipts() delivery.Store }); ok {
 		app.deliveries = provider.DeliveryReceipts()
 	}
@@ -382,6 +388,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := state.Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "resume" || parts[0] == "payqr" || parts[0] == "cancelgo" || parts[0] == "cancelback" || parts[0] == "pay" {
+		a.handlePendingCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "file" || parts[0] == "fileretry" {
 		a.handleDeliveryCallback(ctx, query, parts)
 		return
@@ -454,13 +464,6 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			skuID, _ := strconv.ParseUint(parts[2], 10, 64)
 			quantity, _ := strconv.Atoi(parts[3])
 			a.createOrder(ctx, message.Chat.ID, message.ID, &query.From, uint(productID), uint(skuID), quantity)
-		}
-	case "pay":
-		if len(parts) == 4 {
-			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
-			channelID, _ := strconv.ParseUint(parts[2], 10, 64)
-			useBalance := parts[3] == "1"
-			a.createPayment(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID), uint(channelID), useBalance)
 		}
 	case "orders":
 		status := ""
@@ -835,65 +838,12 @@ func (a *App) createOrderWithData(ctx context.Context, chatID int64, messageID i
 	}
 	channels, err := a.api.PaymentChannels(ctx, strconv.FormatInt(user.ID, 10), order.OrderNo)
 	if err != nil {
-		a.logger.Error("list payment channels", "order_id", order.OrderID, "error", err)
-		a.edit(ctx, chatID, messageID, tr(locale, "订单已创建，但暂时无法获取支付方式。订单号：", "訂單已建立，但暫時無法取得付款方式。訂單號：", "The order was created, but payment methods are unavailable. Order: ")+html.EscapeString(order.OrderNo), a.homeKeyboard(locale))
+		a.logger.Error("list payment channels unavailable", "order_id", order.OrderID)
+		a.edit(ctx, chatID, messageID, tr(locale, "订单已创建，无需重复下单。暂时无法获取支付方式，请稍后从此订单继续。订单号：", "訂單已建立，無需重複下單。暫時無法取得付款方式，請稍後從此訂單繼續。訂單號：", "Order created; do not place it again. Payment methods are temporarily unavailable. Resume this order later: ")+html.EscapeString(order.OrderNo), pendingBack(locale, order.OrderID))
 		return nil
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+2)
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "余额支付", "餘額付款", "Pay with balance"), CallbackData: fmt.Sprintf("pay:%d:0:1", order.OrderID)}})
-	for _, channel := range channels.Items {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: channel.Name, CallbackData: fmt.Sprintf("pay:%d:%d:0", order.OrderID, channel.ID)}})
-	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}})
-	text := "<b>" + tr(locale, "订单创建成功", "訂單建立成功", "Order created") + "</b>\n\n"
-	text += tr(locale, "订单号：", "訂單號：", "Order: ") + html.EscapeString(order.OrderNo)
-	text += "\n" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
-	text += "\n\n" + tr(locale, "请选择支付方式：", "請選擇付款方式：", "Choose a payment method:")
-	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	a.presentPaymentMethods(ctx, chatID, messageID, user.ID, dujiao.OrderDetail{OrderID: order.OrderID, OrderNo: order.OrderNo, Status: "pending_payment", TotalAmount: order.TotalAmount, Currency: order.Currency, ExpiresAt: order.ExpiresAt}, channels)
 	return nil
-}
-
-func (a *App) createPayment(ctx context.Context, chatID int64, messageID int, userID int64, orderID, channelID uint, useBalance bool) {
-	if !a.allowWrite(ctx, chatID, userID, operations.Payment) {
-		return
-	}
-	locale := a.sessions.Get(userID).Locale
-	op := a.ops.Begin(operations.Payment, userID, orderID)
-	result, err := a.api.CreatePayment(ctx, strconv.FormatInt(userID, 10), orderID, channelID, useBalance)
-	op.End(financialOutcome(err), orderID)
-	if err != nil {
-		a.logger.Error("create Dujiao payment failed", "order_id", orderID)
-		a.edit(ctx, chatID, messageID, tr(locale, "创建支付失败，可能是余额不足或支付方式暂不可用。", "建立付款失敗，可能是餘額不足或付款方式暫時無法使用。", "Could not create the payment. Your balance may be insufficient or the method unavailable."), a.homeKeyboard(locale))
-		return
-	}
-	if result.OrderPaid {
-		keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}},
-			{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}},
-		}}
-		a.edit(ctx, chatID, messageID, "✅ "+tr(locale, "支付成功，系统正在处理订单。", "付款成功，系統正在處理訂單。", "Payment successful. Your order is being processed."), keyboard)
-		return
-	}
-	text := "<b>" + tr(locale, "请完成支付", "請完成付款", "Complete payment") + "</b>"
-	if result.Amount != "" {
-		text += "\n\n" + tr(locale, "金额：", "金額：", "Amount: ") + html.EscapeString(result.Amount+" "+result.Currency)
-	}
-	if result.WalletAddress != "" {
-		text += "\n" + tr(locale, "收款地址：", "收款地址：", "Address: ") + "<code>" + html.EscapeString(result.WalletAddress) + "</code>"
-	}
-	if result.ChainAmount != "" {
-		text += "\n" + tr(locale, "链上金额：", "鏈上金額：", "On-chain amount: ") + "<code>" + html.EscapeString(result.ChainAmount) + "</code>"
-	}
-	rows := make([][]models.InlineKeyboardButton, 0, 4)
-	if strings.HasPrefix(result.PayURL, "https://") || strings.HasPrefix(result.PayURL, "http://") {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "前往支付", "前往付款", "Pay now"), URL: result.PayURL}})
-	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新支付状态", "重新整理付款狀態", "Refresh payment status"), CallbackData: fmt.Sprintf("order:%d", orderID)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", orderID)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "返回首页", "返回首頁", "Home"), CallbackData: "home"}})
-	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
-	qrMessageID := a.sendPaymentQRCode(ctx, chatID, locale, result.QRCode, result.PayURL, result.InteractionMode, result.Amount, result.Currency)
-	a.startPaymentPoll(chatID, userID, orderID, messageID, qrMessageID, result.ExpiresAt)
 }
 
 func (a *App) sendPaymentQRCode(ctx context.Context, chatID int64, locale, qrCode, payURL, interactionMode, amount, currency string) int {
@@ -929,23 +879,26 @@ func (a *App) sendPaymentQRCode(ctx context.Context, chatID int64, locale, qrCod
 		}
 	}
 	if err != nil {
-		a.logger.Warn("send payment QR code", "error", err)
+		a.logger.Warn("send payment QR code failed")
 		return 0
 	}
 	return message.ID
 }
 
-func (a *App) startPaymentPoll(chatID, userID int64, orderID uint, messageID, qrMessageID int, expiresAt string) {
+func (a *App) startPaymentPoll(chatID, userID int64, orderID uint, messageID, qrMessageID int, paymentID uint, expiresAt string) {
 	runCtx := a.runtimeContext()
 	pollCtx, cancel := context.WithCancel(runCtx)
-	poll := &activePaymentPoll{cancel: cancel, qrMessageID: qrMessageID}
+	poll := &activePaymentPoll{cancel: cancel, qrMessageID: qrMessageID, paymentID: paymentID}
 	a.pollMu.Lock()
 	previous := a.polls[orderID]
+	if previous != nil && previous.paymentID == paymentID && qrMessageID == 0 {
+		poll.qrMessageID = previous.qrMessageID
+	}
 	a.polls[orderID] = poll
 	a.pollMu.Unlock()
 	if previous != nil {
 		previous.cancel()
-		if previous.qrMessageID > 0 {
+		if previous.qrMessageID > 0 && previous.qrMessageID != poll.qrMessageID {
 			_, _ = a.bot.DeleteMessage(runCtx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: previous.qrMessageID})
 		}
 	}
@@ -967,10 +920,7 @@ func (a *App) pollPayment(ctx context.Context, poll *activePaymentPoll, chatID, 
 		}
 		a.pollMu.Unlock()
 	}()
-	deadline := time.Now().Add(15 * time.Minute)
-	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(expiresAt)); err == nil && parsed.After(time.Now()) && parsed.Before(time.Now().Add(30*time.Minute)) {
-		deadline = parsed
-	}
+	deadline := paymentPollDeadline(time.Now(), expiresAt)
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -978,17 +928,24 @@ func (a *App) pollPayment(ctx context.Context, poll *activePaymentPoll, chatID, 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			a.pollMu.Lock()
+			current := a.polls[orderID] == poll
+			a.pollMu.Unlock()
+			if !current || ctx.Err() != nil {
+				return
+			}
 			if time.Now().After(deadline) {
 				if poll.qrMessageID > 0 {
 					_, _ = a.bot.DeleteMessage(ctx, &tgbot.DeleteMessageParams{ChatID: chatID, MessageID: poll.qrMessageID})
 				}
-				a.showOrder(ctx, chatID, messageID, userID, orderID)
+				locale := a.sessions.Get(userID).Locale
+				a.showOrderNotice(ctx, chatID, messageID, userID, orderID, tr(locale, "自动查询已暂停，不代表付款失败。请刷新订单核对；已付款请勿重复支付。", "自動查詢已暫停，不代表付款失敗。請重新整理訂單核對；已付款請勿重複付款。", "Automatic checks paused; this does not mean payment failed. Refresh the order before paying again."))
 				return
 			}
 			locale := a.sessions.Get(userID).Locale
 			order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
 			if err != nil {
-				a.logger.Debug("poll payment status", "order_id", orderID, "error", err)
+				a.logger.Debug("poll payment status unavailable", "order_id", orderID)
 				continue
 			}
 			if order.Status != "pending_payment" {
@@ -1031,7 +988,7 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 		text += "\n\n<b>" + html.EscapeString(order.ProductTitle) + "</b>"
 		text += "\n<code>" + html.EscapeString(order.OrderNo) + "</code>"
 		text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
-		text += " · " + html.EscapeString(orderStatus(locale, order.Status))
+		text += " · " + html.EscapeString(orderListStatus(locale, order))
 	}
 	if len(orders.Items) == 0 {
 		text += "\n\n" + tr(locale, "还没有订单。", "尚無訂單。", "No orders yet.")
@@ -1054,7 +1011,7 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 		if label == "" {
 			label = order.OrderNo
 		}
-		label += " · " + orderStatus(locale, order.Status)
+		label += " · " + orderListStatus(locale, order)
 		rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
 	}
 	var pager []models.InlineKeyboardButton
@@ -1072,6 +1029,10 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 }
 
 func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	a.showOrderNotice(ctx, chatID, messageID, userID, orderID, "")
+}
+
+func (a *App) showOrderNotice(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint, notice string) {
 	if chatID != userID || userID <= 0 {
 		return
 	}
@@ -1085,6 +1046,12 @@ func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID
 	text += "\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + "<code>" + html.EscapeString(truncate(order.OrderNo, 100)) + "</code>"
 	text += "\n" + tr(locale, "状态：", "狀態：", "Status: ") + html.EscapeString(orderStatus(locale, order.Status))
 	text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
+	if order.Status == "canceled" || order.Status == "cancelled" {
+		text += "\n\n" + tr(locale, "订单已关闭，请勿再使用原支付链接。取消不代表退款；如已付款，请联系商家核对。", "訂單已關閉，請勿再使用原付款連結。取消不代表退款；如已付款，請聯絡商家核對。", "Order closed. Do not use the old payment link. Cancellation is not a refund; contact the seller if already paid.")
+	}
+	if notice != "" {
+		text += "\n\n" + html.EscapeString(notice)
+	}
 	for index, item := range order.Items {
 		if index >= 5 {
 			text += "\n…"
@@ -1102,68 +1069,15 @@ func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📄 下载交付 TXT", "📄 下載交付 TXT", "📄 Download delivery TXT"), CallbackData: fmt.Sprintf("file:%d", order.OrderID)}})
 	}
 	if order.Status == "pending_payment" {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method"), CallbackData: fmt.Sprintf("orderpay:%d", order.OrderID)}})
+		text += "\n\n" + pendingDeadline(locale, order.ExpiresAt, time.Now())
+		if !paymentExpired(order.ExpiresAt, time.Now()) {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "继续支付", "繼續付款", "Continue payment"), CallbackData: fmt.Sprintf("resume:%d", order.OrderID)}})
+		}
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:1"}})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
-}
-
-func (a *App) showOrderPaymentMethods(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
-	locale := a.sessions.Get(userID).Locale
-	order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
-	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "get order for payment", err)
-		return
-	}
-	if order.Status != "pending_payment" {
-		a.showOrder(ctx, chatID, messageID, userID, orderID)
-		return
-	}
-	channels, err := a.api.PaymentChannels(ctx, strconv.FormatInt(userID, 10), order.OrderNo)
-	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "list payment channels", err)
-		return
-	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(channels.Items)+2)
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "余额支付", "餘額付款", "Pay with balance"), CallbackData: fmt.Sprintf("pay:%d:0:1", order.OrderID)}})
-	if !channels.WalletOnlyPayment {
-		for _, channel := range channels.Items {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: channel.Name, CallbackData: fmt.Sprintf("pay:%d:%d:0", order.OrderID, channel.ID)}})
-		}
-	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
-	text := "<b>" + tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method") + "</b>\n\n"
-	text += tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
-	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
-}
-
-func (a *App) confirmCancelOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
-	locale := a.sessions.Get(userID).Locale
-	text := tr(locale, "确定取消这个待支付订单吗？", "確定取消這個待付款訂單嗎？", "Cancel this pending order?")
-	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: tr(locale, "确认取消", "確認取消", "Confirm cancellation"), CallbackData: fmt.Sprintf("cancelorder:%d", orderID)}},
-		{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", orderID)}},
-	}}
-	a.edit(ctx, chatID, messageID, text, keyboard)
-}
-
-func (a *App) cancelOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
-	if !a.allowWrite(ctx, chatID, userID, operations.OrderCancel) {
-		return
-	}
-	locale := a.sessions.Get(userID).Locale
-	op := a.ops.Begin(operations.OrderCancel, userID, orderID)
-	if _, err := a.api.CancelOrder(ctx, strconv.FormatInt(userID, 10), orderID); err != nil {
-		op.End(financialOutcome(err), orderID)
-		a.logger.Error("cancel Dujiao order failed", "order_id", orderID)
-		a.edit(ctx, chatID, messageID, tr(locale, "订单无法取消，可能已支付、已取消或已过期。", "訂單無法取消，可能已付款、已取消或已過期。", "The order cannot be cancelled. It may already be paid, cancelled, or expired."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "查看订单", "查看訂單", "View order"), CallbackData: fmt.Sprintf("order:%d", orderID)}}}})
-		return
-	}
-	op.End(operations.Succeeded, orderID)
-	a.stopPaymentPoll(ctx, chatID, orderID)
-	a.showOrder(ctx, chatID, messageID, userID, orderID)
 }
 
 func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
