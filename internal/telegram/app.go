@@ -273,7 +273,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	case "/affiliate":
 		a.showAffiliate(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/language":
-		a.showLanguage(ctx, message.Chat.ID, false, 0)
+		a.showLanguage(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/help":
 		a.showHelp(ctx, message.Chat.ID, state.Locale)
 	case "/cancel":
@@ -546,7 +546,7 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 			}
 		}
 	case "lang":
-		a.showLanguage(ctx, message.Chat.ID, true, message.ID)
+		a.showLanguage(ctx, message.Chat.ID, query.From.ID, true, message.ID)
 	case "setlang":
 		if len(parts) == 2 && validLocale(parts[1]) {
 			locale = parts[1]
@@ -1283,13 +1283,33 @@ func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID 
 	a.sendPaymentQRCode(ctx, chatID, locale, result.Payment.QRCode, result.Payment.PayURL, result.Payment.InteractionMode, result.Payment.Amount, result.Payment.Currency)
 }
 
-func (a *App) showLanguage(ctx context.Context, chatID int64, edit bool, messageID int) {
+func (a *App) showLanguage(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
+	state := a.sessions.Get(userID)
+	if !a.sessionOK(ctx, chatID, state.Err) {
+		return
+	}
+	var choices []models.InlineKeyboardButton
+	current := ""
+	for _, language := range []struct{ code, label string }{{"zh-CN", "简体中文"}, {"zh-TW", "繁體中文"}, {"en-US", "English"}} {
+		label := language.label
+		if language.code == state.Locale {
+			current, label = language.label, "✓ "+label
+		}
+		choices = append(choices, models.InlineKeyboardButton{Text: label, CallbackData: "setlang:" + language.code})
+	}
+	// Three short, mutually exclusive language names form one compact choice row.
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: "简体中文", CallbackData: "setlang:zh-CN"}},
-		{{Text: "繁體中文", CallbackData: "setlang:zh-TW"}},
-		{{Text: "English", CallbackData: "setlang:en-US"}},
+		choices,
+		{
+			{Text: tr(state.Locale, "❓ 帮助中心", "❓ 說明中心", "❓ Help"), CallbackData: "help"},
+			{Text: tr(state.Locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+		},
 	}}
-	a.sendOrEdit(ctx, chatID, messageID, "请选择语言 / 請選擇語言 / Choose a language:", keyboard, edit)
+	text := "<b>" + tr(state.Locale, "选择语言", "選擇語言", "Choose a language") + "</b>"
+	if current != "" {
+		text += "\n" + tr(state.Locale, "当前语言：", "目前語言：", "Current language: ") + current
+	}
+	a.sendOrEdit(ctx, chatID, messageID, text, keyboard, edit)
 }
 
 func (a *App) showHelp(ctx context.Context, chatID int64, locale string) {
@@ -1301,11 +1321,22 @@ func (a *App) showHelpEdit(ctx context.Context, chatID int64, messageID int, loc
 }
 
 func (a *App) helpKeyboard(locale string) models.InlineKeyboardMarkup {
-	keyboard := a.backKeyboard(locale)
+	var rows [][]models.InlineKeyboardButton
 	if target := orderSupportTarget(a.botConfig().Basic.SupportURL, ""); target.URL != "" {
-		keyboard.InlineKeyboard = append([][]models.InlineKeyboardButton{{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: target.URL}}}, keyboard.InlineKeyboard...)
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "💬 联系客服", "💬 聯絡客服", "💬 Support"), URL: target.URL}})
 	}
-	return keyboard
+	rows = append(rows,
+		[]models.InlineKeyboardButton{
+			{Text: tr(locale, "📦 我的订单", "📦 我的訂單", "📦 Orders"), CallbackData: "orders:a:1"},
+			{Text: tr(locale, "💰 我的钱包", "💰 我的錢包", "💰 Wallet"), CallbackData: "wallet"},
+		},
+		[]models.InlineKeyboardButton{
+			{Text: tr(locale, "🌐 切换语言", "🌐 切換語言", "🌐 Language"), CallbackData: "lang"},
+			{Text: tr(locale, "🔔 公告订阅", "🔔 公告訂閱", "🔔 Announcements"), CallbackData: "bcsubscriptions"},
+		},
+		shopHomeButtons(locale),
+	)
+	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
 func (a *App) helpText(locale string) string {
@@ -1315,9 +1346,9 @@ func (a *App) helpText(locale string) string {
 		return html.EscapeString(intro)
 	}
 	return tr(locale,
-		"使用菜单浏览分类和商品。如需人工帮助，请联系商店客服。",
-		"使用選單瀏覽分類和商品。如需人工協助，請聯絡商店客服。",
-		"Use the menu to browse categories and products. Contact store support if you need help.")
+		"购买：选择商品和数量，确认订单后选择支付方式。\n订单与售后：在「我的订单」查看进度，有交付内容时可下载 TXT，也可携订单号联系客服。\n充值：打开「我的钱包」。公告订阅是可选的，不影响订单通知。",
+		"購買：選擇商品與數量，確認訂單後選擇付款方式。\n訂單與售後：在「我的訂單」查看進度，有交付內容時可下載 TXT，也可攜訂單號聯絡客服。\n儲值：開啟「我的錢包」。公告訂閱是可選的，不影響訂單通知。",
+		"Buying: choose a product and quantity, confirm the order, then choose a payment method.\nOrders and support: open My orders to check progress, download an available TXT delivery, or contact support with the order number.\nRecharge: open My wallet. Announcement subscriptions are optional and do not affect order notifications.")
 }
 
 func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {

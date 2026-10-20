@@ -31,6 +31,7 @@ type formFixture struct {
 	orders               []dujiao.OrderRequest
 	texts                []string
 	methods              []string
+	editFailure          string
 	chatIDs              []string
 	adminSent            chan string
 	markups              []string
@@ -78,6 +79,12 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 				}
 				text := r.FormValue("text")
 				fixture.mu.Lock()
+				if method == "editMessageText" && fixture.editFailure != "" {
+					failure := fixture.editFailure
+					fixture.mu.Unlock()
+					_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error_code": 400, "description": failure})
+					return
+				}
 				fixture.texts = append(fixture.texts, text)
 				fixture.methods = append(fixture.methods, method)
 				fixture.chatIDs = append(fixture.chatIDs, r.FormValue("chat_id"))

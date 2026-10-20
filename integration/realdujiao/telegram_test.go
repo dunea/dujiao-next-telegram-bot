@@ -355,7 +355,11 @@ func (f *telegramFlow) click(m tgMessage, data string) {
 		f.s.t.Fatal("expected real button missing")
 	}
 	f.inputID++
-	f.control("/test/update", map[string]any{"callback_query": map[string]any{"id": fmt.Sprint(f.inputID), "from": map[string]any{"id": buyerID, "is_bot": false, "first_name": "Synthetic"}, "data": data, "chat_instance": "isolated", "message": map[string]any{"message_id": m.ID, "date": time.Now().Unix(), "chat": map[string]any{"id": buyerID, "type": "private"}, "text": m.Text}}}, nil)
+	message := map[string]any{"message_id": m.ID, "date": time.Now().Unix(), "chat": map[string]any{"id": buyerID, "type": "private"}, "text": m.Text}
+	if len(m.Keyboard) > 0 {
+		message["reply_markup"] = m.Keyboard
+	}
+	f.control("/test/update", map[string]any{"callback_query": map[string]any{"id": fmt.Sprint(f.inputID), "from": map[string]any{"id": buyerID, "is_bot": false, "first_name": "Synthetic"}, "data": data, "chat_instance": "isolated", "message": message}}, nil)
 }
 func button(m tgMessage, prefix, suffix string) string {
 	var keyboard struct {

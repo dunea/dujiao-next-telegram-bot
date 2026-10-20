@@ -96,7 +96,7 @@ func (a *App) handleBroadcastCommand(ctx context.Context, m *models.Message, com
 	switch command {
 	case "/subscribe", "/unsubscribe":
 		if m.Chat.ID == m.From.ID {
-			a.changeSubscription(ctx, m.From.ID, command == "/subscribe")
+			a.changeSubscription(ctx, m.From.ID, command == "/subscribe", 0)
 		}
 		return true
 	case "/broadcast":
@@ -112,17 +112,76 @@ func (a *App) handleBroadcastCommand(ctx context.Context, m *models.Message, com
 	}
 	return false
 }
-func (a *App) changeSubscription(ctx context.Context, uid int64, on bool) {
+func (a *App) changeSubscription(ctx context.Context, uid int64, on bool, messageID int) {
 	if err := a.broadcastStore.SetSubscribed(ctx, uid, on); err != nil {
-		a.broadcastFailure(ctx, uid, err)
+		a.subscriptionFailure(ctx, uid)
 		return
 	}
-	text, outcome := "已退订商店公告；订单、支付和充值通知保持不变。已在途的一条公告可能仍会送达。\nAnnouncements unsubscribed; transaction notifications remain enabled.", operations.Unsubscribed
+	// Unsubscribe must remain independent of financial session availability and
+	// its rate budget. A failed locale read falls back to the default wording.
+	locale := a.subscriptionLocale(uid)
+	text, outcome := tr(locale, "已退订商店公告；订单、支付和充值通知保持不变。已在途的一条公告可能仍会送达。", "已退訂商店公告；訂單、付款與儲值通知保持不變。已在途的一則公告可能仍會送達。", "Announcements unsubscribed. Order, payment and recharge notifications stay enabled. An announcement already in flight may still arrive."), operations.Unsubscribed
 	if on {
-		text, outcome = "已主动订阅商店公告。每条公告可退订，也可随时发送 /unsubscribe。\nAnnouncements subscribed. Send /unsubscribe any time.", operations.Subscribed
+		text, outcome = tr(locale, "已主动订阅商店公告。可在本页或每条公告下退订，也可随时发送 /unsubscribe。", "已主動訂閱商店公告。可在本頁或每則公告下退訂，也可隨時傳送 /unsubscribe。", "Announcements subscribed. Unsubscribe here, below any announcement, or with /unsubscribe at any time."), operations.Subscribed
 	}
 	a.ops.Record(operations.Event{Action: operations.Subscription, Outcome: outcome, UserID: uid})
-	_, _ = a.broadcastPlain(ctx, uid, text, nil)
+	a.publishSubscription(ctx, uid, messageID, text, subscriptionKeyboard(locale, on))
+}
+
+func subscriptionKeyboard(locale string, subscribed bool) models.InlineKeyboardMarkup {
+	label, action := tr(locale, "🔔 订阅公告", "🔔 訂閱公告", "🔔 Subscribe"), "bcsubscribe"
+	if subscribed {
+		label, action = tr(locale, "🔕 退订公告", "🔕 退訂公告", "🔕 Unsubscribe"), "bcunsubscribe"
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: label, CallbackData: action}},
+		{
+			{Text: tr(locale, "❓ 帮助中心", "❓ 說明中心", "❓ Help"), CallbackData: "help"},
+			{Text: tr(locale, "🌐 切换语言", "🌐 切換語言", "🌐 Language"), CallbackData: "lang"},
+		},
+		shopHomeButtons(locale),
+	}}
+}
+
+func (a *App) subscriptionLocale(uid int64) string {
+	locale := a.sessions.Get(uid).Locale
+	if !validLocale(locale) {
+		locale = a.botConfig().DefaultLocale
+	}
+	return locale
+}
+
+func subscriptionPanelMessageID(message *models.Message) int {
+	// The unsubscribe button also exists below delivered announcements. Never
+	// replace that original content; only edit a known subscription panel.
+	if message.ReplyMarkup != nil && len(message.ReplyMarkup.InlineKeyboard) == 3 {
+		rows := message.ReplyMarkup.InlineKeyboard
+		if len(rows[0]) == 1 && (rows[0][0].CallbackData == "bcsubscribe" || rows[0][0].CallbackData == "bcunsubscribe") && len(rows[2]) == 2 && rows[2][0].CallbackData == "cats" && rows[2][1].CallbackData == "home" {
+			return message.ID
+		}
+	}
+	return 0
+}
+
+func (a *App) publishSubscription(ctx context.Context, uid int64, messageID int, text string, keyboard models.InlineKeyboardMarkup) {
+	if messageID > 0 {
+		disabled := true
+		_, err := a.bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{ChatID: uid, MessageID: messageID, Text: text, ReplyMarkup: keyboard, LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: &disabled}})
+		if err == nil || strings.Contains(err.Error(), "message is not modified") {
+			return
+		}
+	}
+	// Only retry presentation, never the subscription mutation or a broadcast.
+	_, _ = a.broadcastPlain(ctx, uid, text, keyboard)
+}
+
+func (a *App) subscriptionFailure(ctx context.Context, uid int64) {
+	locale := a.subscriptionLocale(uid)
+	a.logger.Warn("subscription state not confirmed")
+	_, _ = a.broadcastPlain(ctx, uid, tr(locale, "公告订阅状态暂未确认。请稍后重新查看，勿连续点击；订单通知不受影响。", "公告訂閱狀態暫未確認。請稍後重新查看，勿連續點擊；訂單通知不受影響。", "Announcement subscription status could not be confirmed. Check again later; avoid repeated clicks. Order notifications are unaffected."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+		{{Text: tr(locale, "重新查看订阅状态", "重新查看訂閱狀態", "Check subscription"), CallbackData: "bcsubscriptions"}},
+		shopHomeButtons(locale),
+	}})
 }
 func (a *App) newBroadcast(ctx context.Context, uid int64) {
 	if !a.allow(ctx, uid, "broadcast-admin", ratelimit.Rule{Limit: 10, Window: time.Minute}) {
@@ -240,20 +299,21 @@ func (a *App) handleBroadcastCallback(ctx context.Context, q *models.CallbackQue
 		return
 	}
 	if q.Data == "bcunsubscribe" || q.Data == "bcsubscribe" {
-		a.changeSubscription(ctx, uid, q.Data == "bcsubscribe")
+		a.changeSubscription(ctx, uid, q.Data == "bcsubscribe", subscriptionPanelMessageID(m))
 		return
 	}
 	if q.Data == "bcsubscriptions" {
 		token, err := a.broadcastStore.Consent(ctx, uid)
 		if err != nil {
-			a.broadcastFailure(ctx, uid, err)
+			a.subscriptionFailure(ctx, uid)
 			return
 		}
-		text, label, data := "尚未订阅公告；订阅是可选的，不影响购物。", "主动订阅公告 / Subscribe", "bcsubscribe"
+		locale := a.subscriptionLocale(uid)
+		text := tr(locale, "尚未订阅公告；订阅是可选的，不影响购物及订单通知。", "尚未訂閱公告；訂閱是可選的，不影響購物與訂單通知。", "Not subscribed to announcements. Subscriptions are optional and do not affect shopping or order notifications.")
 		if token != "" {
-			text, label, data = "已订阅公告；退订仅影响公告，不影响订单通知。", "退订公告 / Unsubscribe", "bcunsubscribe"
+			text = tr(locale, "已订阅公告；退订仅影响公告，不影响订单、支付和充值通知。", "已訂閱公告；退訂僅影響公告，不影響訂單、付款與儲值通知。", "Subscribed to announcements. Unsubscribing only stops announcements, not order, payment or recharge notifications.")
 		}
-		_, _ = a.broadcastPlain(ctx, uid, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: label, CallbackData: data}}}})
+		a.publishSubscription(ctx, uid, m.ID, text, subscriptionKeyboard(locale, token != ""))
 		return
 	}
 	if !a.broadcastAdmin(ctx, m.Chat.ID, uid) {
