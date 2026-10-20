@@ -375,6 +375,16 @@ func (s *stack) verify(f fixture) {
 			if order.OrderNo != expected.order.OrderNo || order.TotalAmount != "7.25" {
 				t.Fatal("order data changed")
 			}
+			byNumber, lookupErr := c.OrderByOrderNo(ctx, b.User.ChannelUserID, "zh-CN", order.OrderNo)
+			byNumber = must(t, "owner-scoped order number route", byNumber, lookupErr)
+			if byNumber.OrderID != order.OrderID || byNumber.OrderNo != order.OrderNo || byNumber.Status != order.Status {
+				t.Fatal("number lookup differs from ID lookup")
+			}
+			_, lookupErr = c.OrderByOrderNo(ctx, "910000000", "zh-CN", order.OrderNo)
+			var unowned *dujiao.APIError
+			if !errors.As(lookupErr, &unowned) || unowned.HTTPStatus != 404 || unowned.ErrorCode != "order_not_found" {
+				t.Fatal("number lookup lost user isolation")
+			}
 			if expected.cancelled && (order.Status != "canceled" || order.CancelledAt == "") {
 				t.Fatal("cancelled order status changed")
 			}

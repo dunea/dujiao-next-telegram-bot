@@ -32,6 +32,10 @@ type pendingFixture struct {
 	balance                       string
 	walletSuccess                 bool
 	logs                          auditBuffer
+	list                          dujiao.OrderList
+	listCalls                     []string
+	lookupCalls, lookupFailure    int
+	lookupMismatch                bool
 }
 
 func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
@@ -88,6 +92,23 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 		}
 		var data any
 		switch r.URL.Path {
+		case "/api/v1/channel/orders":
+			f.listCalls = append(f.listCalls, r.URL.Query().Get("status")+":"+r.URL.Query().Get("page"))
+			if r.URL.Query().Get("page_size") != "5" {
+				t.Error("unexpected order page size")
+			}
+			data = f.list
+		case "/api/v1/channel/orders/by-order-no/DJ7":
+			f.lookupCalls++
+			if f.lookupFailure != 0 {
+				fail(f.lookupFailure, "order_not_found")
+				return
+			}
+			order := f.order
+			if f.lookupMismatch {
+				order.OrderNo = "OTHER-PRIVATE-NUMBER"
+			}
+			data = order
 		case "/api/v1/channel/orders/7":
 			f.reads++
 			data = f.order
@@ -138,6 +159,10 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 			f.order.Status = "canceled"
 			data = dujiao.OrderCancelled{OrderID: 7, Status: "canceled"}
 		default:
+			if strings.HasPrefix(r.URL.Path, "/api/v1/channel/orders/by-order-no/") {
+				fail(404, "order_not_found")
+				return
+			}
 			t.Errorf("unexpected API: %s", r.URL.Path)
 			fail(500, "unexpected")
 			return

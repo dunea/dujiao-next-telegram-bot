@@ -26,6 +26,29 @@ func TestMemoryDefaultsAndUpdates(t *testing.T) {
 	}
 }
 
+func TestOrderLookupMetadataIsolationExpiryAndGuard(t *testing.T) {
+	m := NewMemory("zh-CN")
+	draft := &OrderLookupInput{ID: "search", ChatID: 42, MessageID: 10, Filter: "p", Page: 2, ExpiresAt: time.Now().Add(time.Minute)}
+	returned := m.Update(42, func(s *State) {
+		s.Flow = "order_lookup"
+		s.OrderLookup = draft
+		s.WithdrawalGuard = &WithdrawalGuard{ID: "hold", Status: "unknown"}
+	})
+	draft.Page, returned.OrderLookup.Page = 99, 98
+	if m.Get(42).OrderLookup.Page != 2 || m.Get(43).OrderLookup != nil {
+		t.Fatal("shared lookup metadata")
+	}
+	m.Update(42, func(s *State) { s.OrderLookup.ExpiresAt = time.Now().Add(-time.Second) })
+	if s := m.Get(42); s.Flow != "" || s.OrderLookup != nil || s.WithdrawalGuard == nil {
+		t.Fatal("expiry retained draft/lost guard")
+	}
+	m.Update(42, func(s *State) { s.Flow = "order_lookup"; s.OrderLookup = draft })
+	_ = m.ResetFlow(42)
+	if s := m.Get(42); s.Flow != "" || s.OrderLookup != nil || s.WithdrawalGuard == nil {
+		t.Fatal("reset retained draft/lost guard")
+	}
+}
+
 func TestRechargeDraftIsolationExpiryAndReset(t *testing.T) {
 	store := NewMemory("zh-CN")
 	draft := &RechargeDraft{ID: "recharge", ChatID: 42, MessageID: 7, Channels: []dujiao.PaymentChannel{{ID: 1}}, ExpiresAt: time.Now().Add(time.Minute)}

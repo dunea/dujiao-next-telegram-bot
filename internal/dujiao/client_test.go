@@ -69,6 +69,24 @@ func TestLatestPaymentUsesOwnerScopedReadOnlyEndpoint(t *testing.T) {
 	}
 }
 
+func TestOrderNumberLookupOwnerScopeAndSignature(t *testing.T) {
+	c, err := NewClient("https://example.test", "key", "secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		stamp, _ := strconv.ParseInt(r.Header.Get("Dujiao-Next-Channel-Timestamp"), 10, 64)
+		if r.Method != "GET" || r.URL.Path != "/api/v1/channel/orders/by-order-no/DJ-7_01" || r.URL.Query().Get("channel_user_id") != "42" || r.URL.Query().Get("locale") != "zh-TW" || !Verify("secret", r.Method, r.URL.Path, stamp, nil, r.Header.Get("Dujiao-Next-Channel-Signature")) {
+			t.Error("order number lookup lost owner/signature/locale")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"status_code":0,"data":{"order_id":7,"order_no":"DJ-7_01","status":"fulfilling","children":[{"order_id":8,"status":"delivered","fulfillment":{"status":"delivered","payload":"SYNTHETIC"}}]}}`))}, nil
+	})
+	o, err := c.OrderByOrderNo(context.Background(), "42", "zh-TW", "DJ-7_01")
+	if err != nil || o.OrderID != 7 || len(o.Children) != 1 || o.Children[0].Fulfillment.Status != "delivered" {
+		t.Fatal("lookup response not decoded", err)
+	}
+}
+
 func TestClientReturnsAPIError(t *testing.T) {
 	client, err := NewClient("https://example.test", "key", "secret", time.Second)
 	if err != nil {

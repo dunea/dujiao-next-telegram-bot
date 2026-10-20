@@ -96,7 +96,7 @@ func TestTelegramBulkDeliveryTXT(t *testing.T) {
 	f.waitText("TXT 已发送")
 	f.command("/orders")
 	menu = f.waitButton("order:")
-	f.click(menu, button(menu, "order:", fmt.Sprint(order.OrderID)))
+	f.click(menu, button(menu, fmt.Sprintf("order:%d:", order.OrderID), ""))
 	view = f.waitButton("file:")
 	f.click(view, button(view, "file:", ""))
 	f.waitText("TXT 已发送")

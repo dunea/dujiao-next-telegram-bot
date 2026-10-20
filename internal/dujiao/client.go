@@ -130,6 +130,15 @@ func (c *Client) Order(ctx context.Context, channelUserID, locale string, orderI
 	})
 }
 
+// OrderByOrderNo uses the Channel API's owner-scoped lookup, not the public
+// storefront lookup. An order number never substitutes for channel_user_id.
+func (c *Client) OrderByOrderNo(ctx context.Context, channelUserID, locale, orderNo string) (OrderDetail, error) {
+	return get[OrderDetail](ctx, c, "/orders/by-order-no/"+url.PathEscape(orderNo), url.Values{
+		"channel_user_id": {channelUserID},
+		"locale":          {locale},
+	})
+}
+
 func (c *Client) CancelOrder(ctx context.Context, channelUserID string, orderID uint) (OrderCancelled, error) {
 	return post[OrderCancelled](ctx, c, "/orders/"+strconv.FormatUint(uint64(orderID), 10)+"/cancel", map[string]any{
 		"channel_user_id": channelUserID,

@@ -26,7 +26,7 @@ const maxDeliveryTXT = 4 << 20
 
 func deliveryAllowed(order dujiao.OrderDetail) bool {
 	switch order.Status {
-	case "completed", "delivered", "paid", "processing", "partially_delivered":
+	case "completed", "delivered", "paid", "processing", "fulfilling", "partially_delivered":
 		return true
 	}
 	return false

@@ -74,6 +74,34 @@ func TestRedisEncryptedRoundTripAcrossClients(t *testing.T) {
 	}
 }
 
+func TestRedisOrderLookupRestartAndTTL(t *testing.T) {
+	r, server := redisFixture(t)
+	s := r.Update(42, func(s *State) {
+		s.Flow = "order_lookup"
+		s.OrderLookup = &OrderLookupInput{ID: "lookup-ui-only", ChatID: 42, MessageID: 10, Filter: "v", Page: 2, ExpiresAt: time.Now().Add(5 * time.Minute)}
+		s.WithdrawalGuard = &WithdrawalGuard{ID: "keep", Status: "unknown"}
+	})
+	if s.Err != nil {
+		t.Fatal(s.Err)
+	}
+	for _, key := range server.Keys() {
+		body, _ := server.Get(key)
+		if strings.Contains(body, "lookup-ui-only") {
+			t.Fatal("unencrypted lookup draft")
+		}
+	}
+	restarted := connectRedis(t, "redis://"+server.Addr())
+	got := restarted.Get(42)
+	if got.Err != nil || got.OrderLookup == nil || got.OrderLookup.Filter != "v" || got.OrderLookup.Page != 2 || got.Flow != "order_lookup" {
+		t.Fatal("lookup did not survive restart")
+	}
+	server.FastForward(6 * time.Minute)
+	got = restarted.Get(42)
+	if got.Err != nil || got.OrderLookup != nil || got.Flow != "" || got.WithdrawalGuard == nil {
+		t.Fatal("TTL lost guard or retained input")
+	}
+}
+
 func TestRedisDraftTTLAndResetNeverExpireProtection(t *testing.T) {
 	r, server := redisFixture(t)
 	result := r.Update(42, func(s *State) {

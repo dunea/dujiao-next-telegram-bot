@@ -83,7 +83,7 @@ func TestTelegramPendingOrder(t *testing.T) {
 	f.healthy()
 	f.command("/orders")
 	menu = f.waitButton("order:")
-	f.click(menu, button(menu, "order:", fmt.Sprint(oid)))
+	f.click(menu, button(menu, fmt.Sprintf("order:%d:", oid), ""))
 	menu = f.waitButton("resume:")
 	f.click(menu, button(menu, "resume:", ""))
 	card = f.waitButton("payqr:")

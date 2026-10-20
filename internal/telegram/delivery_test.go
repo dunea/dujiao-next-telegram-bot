@@ -149,7 +149,7 @@ func TestDeliveryTXTCompleteBulkAndAllChildren(t *testing.T) {
 	if data, err := deliveryTXT(o); err == nil || data != nil {
 		t.Fatal("oversized TXT silently truncated")
 	}
-	for _, status := range []string{"pending_payment", "cancelled", "canceled", "refunded", ""} {
+	for _, status := range []string{"pending_payment", "cancelled", "canceled", "refunded", "partially_refunded", ""} {
 		o.Status = status
 		if hasDelivery(o) {
 			t.Fatal("ineligible order exposed payload", status)
@@ -184,6 +184,29 @@ func TestDeliveryTXTIsolationAndSummary(t *testing.T) {
 	f.mu.Unlock()
 	if strings.Contains(f.logs.text(), "PRIVATE-CARD") || strings.Contains(f.logs.text(), "private-test-token") {
 		t.Fatal("delivery secret leaked to logs")
+	}
+}
+
+func TestOfficialFulfillingAndPartialDeliveryRemainOwnerScoped(t *testing.T) {
+	for _, status := range []string{"fulfilling", "partially_delivered"} {
+		t.Run(status, func(t *testing.T) {
+			a, f := newDeliveryFixture(t)
+			f.order.Status = status
+			download(a, 43, 43, "file:7")
+			download(a, 42, -100, "file:7")
+			if len(f.files) != 0 {
+				t.Fatal("non-owner/group downloaded existing content")
+			}
+			download(a, 42, 42, "file:7")
+			if len(f.files) != 1 {
+				t.Fatal("existing partial delivery unavailable to owner")
+			}
+			f.order.Status = "refunded"
+			download(a, 42, 42, "file:7")
+			if len(f.files) != 1 {
+				t.Fatal("fully refunded order allowed delivery")
+			}
+		})
 	}
 }
 

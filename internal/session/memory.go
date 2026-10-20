@@ -23,8 +23,19 @@ type State struct {
 	GiftCard        *GiftCardInput
 	Recharge        *RechargeDraft
 	Quantity        *QuantityInput
+	OrderLookup     *OrderLookupInput
 	Withdrawal      *WithdrawalDraft
 	WithdrawalGuard *WithdrawalGuard
+}
+
+// OrderLookupInput holds navigation metadata only, never the searched number.
+type OrderLookupInput struct {
+	ID        string
+	ChatID    int64
+	MessageID int
+	Filter    string
+	Page      int
+	ExpiresAt time.Time
 }
 
 // QuantityInput contains only UI metadata, never a submitted order. A fresh ID
@@ -111,6 +122,10 @@ type PurchaseDraft struct {
 }
 
 func cloneState(state State) State {
+	if state.OrderLookup != nil {
+		input := *state.OrderLookup
+		state.OrderLookup = &input
+	}
 	if state.Quantity != nil {
 		input := *state.Quantity
 		state.Quantity = &input
@@ -190,6 +205,12 @@ type Store interface {
 }
 
 func normalizeState(state State, now time.Time) State {
+	if state.OrderLookup != nil && !now.Before(state.OrderLookup.ExpiresAt) {
+		state.OrderLookup = nil
+		if state.Flow == "order_lookup" {
+			state.Flow = ""
+		}
+	}
 	if state.Quantity != nil && !now.Before(state.Quantity.ExpiresAt) {
 		state.Quantity = nil
 		if state.Flow == "purchase_quantity" {
@@ -264,6 +285,7 @@ func resetFlow(state *State) {
 	state.GiftCard = nil
 	state.Recharge = nil
 	state.Quantity = nil
+	state.OrderLookup = nil
 	state.Withdrawal = nil
 }
 

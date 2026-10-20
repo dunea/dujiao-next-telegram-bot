@@ -46,6 +46,27 @@ func TestDemoCouponPolicy(t *testing.T) {
 	}
 }
 
+func TestDemoNumberLookupOwnerScope(t *testing.T) {
+	orderMu.Lock()
+	previous := demoOrders
+	demoOrders = []map[string]any{{"order_id": uint(7), "order_no": "DEMO000007", "channel_user_id": "42", "status": "paid"}}
+	orderMu.Unlock()
+	t.Cleanup(func() { orderMu.Lock(); demoOrders = previous; orderMu.Unlock() })
+	for _, tc := range []struct {
+		uid, number string
+		status      int
+	}{{"42", "DEMO000007", 200}, {"43", "DEMO000007", 404}, {"", "DEMO000007", 404}, {"42", "MISSING", 404}} {
+		w := httptest.NewRecorder()
+		dujiaoHandler(w, httptest.NewRequest("GET", "/api/v1/channel/orders/by-order-no/"+tc.number+"?channel_user_id="+tc.uid, nil))
+		if w.Code != tc.status {
+			t.Fatal("incorrect lookup result")
+		}
+		if tc.status == 404 && strings.Contains(w.Body.String(), "DEMO000007") {
+			t.Fatal("unowned order leaked")
+		}
+	}
+}
+
 func TestDemoCouponOrderChargesDiscountedBalance(t *testing.T) {
 	orderMu.Lock()
 	originalOrders := demoOrders

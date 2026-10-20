@@ -235,7 +235,11 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.handleWithdrawalMessage(ctx, message)
 		return
 	}
-	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Quantity != nil || state.Withdrawal != nil) {
+	if state.Flow == "order_lookup" && !navigating {
+		a.handleOrderLookupMessage(ctx, message, state)
+		return
+	}
+	if navigating && (state.Purchase != nil || state.GiftCard != nil || state.Recharge != nil || state.Quantity != nil || state.Withdrawal != nil || state.OrderLookup != nil) {
 		if !a.sessionOK(ctx, message.Chat.ID, a.sessions.ResetFlow(message.From.ID)) {
 			return
 		}
@@ -255,7 +259,11 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 	case "/products":
 		a.showCategories(ctx, message.Chat.ID, message.From, false, 0)
 	case "/orders":
-		a.showOrders(ctx, message.Chat.ID, message.From.ID, "", 1, false, 0)
+		if strings.TrimSpace(argument) != "" {
+			a.findOrder(ctx, message.Chat.ID, 0, message.From.ID, argument, "a", 1, nil)
+		} else {
+			a.showOrders(ctx, message.Chat.ID, message.From.ID, "", 1, false, 0)
+		}
 	case "/wallet":
 		a.showWallet(ctx, message.Chat.ID, message.From.ID, false, 0)
 	case "/recharge":
@@ -476,9 +484,22 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		}
 		a.showOrders(ctx, message.Chat.ID, query.From.ID, status, page, true, message.ID)
 	case "order":
-		if len(parts) == 2 {
+		if len(parts) == 2 || len(parts) == 4 {
 			orderID, _ := strconv.ParseUint(parts[1], 10, 64)
-			a.showOrder(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID))
+			code, page := "a", 1
+			if len(parts) == 4 {
+				code, page = orderContext(parts[2], parts[3])
+			}
+			a.showOrderContext(ctx, message.Chat.ID, message.ID, query.From.ID, uint(orderID), "", code, page)
+		}
+	case "orderfilters", "orderfind":
+		if len(parts) == 3 && message.Chat.ID == query.From.ID {
+			code, page := orderContext(parts[1], parts[2])
+			if parts[0] == "orderfilters" {
+				a.showOrderFilters(ctx, message.Chat.ID, message.ID, locale, code, page)
+			} else {
+				a.askOrderLookup(ctx, message.Chat.ID, message.ID, query.From.ID, code, page)
+			}
 		}
 	case "orderpay":
 		if len(parts) == 2 {
@@ -974,52 +995,58 @@ func (a *App) stopPaymentPoll(ctx context.Context, chatID int64, orderID uint) {
 }
 
 func (a *App) showOrders(ctx context.Context, chatID, userID int64, status string, page int, edit bool, messageID int) {
-	if page < 1 {
-		page = 1
+	if chatID != userID || userID <= 0 {
+		return
 	}
+	filterCode, page := orderContext(orderFilterCode(status), strconv.Itoa(page))
+	status = orderFilterStatus(filterCode)
 	locale := a.sessions.Get(userID).Locale
 	orders, err := a.api.Orders(ctx, strconv.FormatInt(userID, 10), locale, status, page, 5)
 	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "list orders", err)
+		a.orderReadFailure(ctx, chatID, locale, err)
+		return
+	}
+	if orders.TotalPages == 0 {
+		page = 1
+	}
+	// A filtered page can disappear after payment/cancellation. Return to the
+	// last real page rather than making the user walk back through empty pages.
+	if orders.TotalPages > 0 && int64(page) > orders.TotalPages {
+		a.showOrders(ctx, chatID, userID, status, int(orders.TotalPages), edit, messageID)
 		return
 	}
 	text := "<b>" + tr(locale, "我的订单", "我的訂單", "My orders") + "</b>"
-	for _, order := range orders.Items {
-		text += "\n\n<b>" + html.EscapeString(order.ProductTitle) + "</b>"
-		text += "\n<code>" + html.EscapeString(order.OrderNo) + "</code>"
+	text += "\n" + orderFilterLabel(locale, filterCode) + fmt.Sprintf(" · %d/%d", page, max(1, orders.TotalPages))
+	text += " · " + fmt.Sprintf(tr(locale, "共 %d 单", "共 %d 單", "%d orders"), orders.Total)
+	for index, order := range orders.Items {
+		text += fmt.Sprintf("\n\n<b>%d. %s</b>", index+1, html.EscapeString(truncate(order.ProductTitle, 60)))
+		text += "\n<code>" + html.EscapeString(truncate(order.OrderNo, 100)) + "</code>"
 		text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
 		text += " · " + html.EscapeString(orderListStatus(locale, order))
+		text += "\n" + tr(locale, "交付：", "交付：", "Delivery: ") + listDeliveryStatus(locale, order.Status)
 	}
 	if len(orders.Items) == 0 {
-		text += "\n\n" + tr(locale, "还没有订单。", "尚無訂單。", "No orders yet.")
+		text += "\n\n" + tr(locale, "当前筛选下没有订单，可切换状态或按订单号查找。", "目前篩選下沒有訂單，可切換狀態或按訂單號查找。", "No matching orders. Change the filter or search by order number.")
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, len(orders.Items)+3)
-	filterCode := orderFilterCode(status)
-	filterButton := func(label, code string) models.InlineKeyboardButton {
-		if filterCode == code {
-			label = "✓ " + label
-		}
-		return models.InlineKeyboardButton{Text: label, CallbackData: "orders:" + code + ":1"}
-	}
 	rows = append(rows, []models.InlineKeyboardButton{
-		filterButton(tr(locale, "全部", "全部", "All"), "a"),
-		filterButton(tr(locale, "待支付", "待付款", "Pending"), "p"),
-		filterButton(tr(locale, "已完成", "已完成", "Completed"), "c"),
+		{Text: tr(locale, "🔎 订单号查找", "🔎 訂單號查找", "🔎 Find order"), CallbackData: fmt.Sprintf("orderfind:%s:%d", filterCode, page)},
+		{Text: tr(locale, "筛选：", "篩選：", "Filter: ") + orderFilterLabel(locale, filterCode), CallbackData: fmt.Sprintf("orderfilters:%s:%d", filterCode, page)},
 	})
-	for _, order := range orders.Items {
+	for index, order := range orders.Items {
 		label := order.ProductTitle
 		if label == "" {
 			label = order.OrderNo
 		}
 		label += " · " + orderListStatus(locale, order)
-		rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("%d · %s", index+1, truncate(label, 50)), CallbackData: orderViewCallback(order.OrderID, filterCode, page)}})
 	}
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
-		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page-1)})
+		pager = append(pager, models.InlineKeyboardButton{Text: tr(locale, "‹ 上一页", "‹ 上一頁", "‹ Previous"), CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page-1)})
 	}
 	if int64(page) < orders.TotalPages {
-		pager = append(pager, models.InlineKeyboardButton{Text: "›", CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page+1)})
+		pager = append(pager, models.InlineKeyboardButton{Text: tr(locale, "下一页 ›", "下一頁 ›", "Next ›"), CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page+1)})
 	}
 	if len(pager) > 0 {
 		rows = append(rows, pager)
@@ -1033,6 +1060,10 @@ func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID
 }
 
 func (a *App) showOrderNotice(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint, notice string) {
+	a.showOrderContext(ctx, chatID, messageID, userID, orderID, notice, "a", 1)
+}
+
+func (a *App) showOrderContext(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint, notice, code string, page int) {
 	if chatID != userID || userID <= 0 {
 		return
 	}
@@ -1042,9 +1073,16 @@ func (a *App) showOrderNotice(ctx context.Context, chatID int64, messageID int, 
 		a.deliveryLookupFailure(ctx, chatID, locale)
 		return
 	}
+	a.renderOrder(ctx, chatID, messageID, locale, order, notice, code, page)
+}
+
+// Only pass a freshly owner-scoped detail from Order/OrderByOrderNo here.
+func (a *App) renderOrder(ctx context.Context, chatID int64, messageID int, locale string, order dujiao.OrderDetail, notice, code string, page int) {
 	text := "<b>" + tr(locale, "订单详情", "訂單詳情", "Order details") + "</b>"
 	text += "\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + "<code>" + html.EscapeString(truncate(order.OrderNo, 100)) + "</code>"
 	text += "\n" + tr(locale, "状态：", "狀態：", "Status: ") + html.EscapeString(orderStatus(locale, order.Status))
+	text += "\n" + tr(locale, "付款：", "付款：", "Payment: ") + orderPaymentStatus(locale, order.Status)
+	text += "\n" + tr(locale, "交付：", "交付：", "Delivery: ") + detailDeliveryStatus(locale, order)
 	text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
 	if order.Status == "canceled" || order.Status == "cancelled" {
 		text += "\n\n" + tr(locale, "订单已关闭，请勿再使用原支付链接。取消不代表退款；如已付款，请联系商家核对。", "訂單已關閉，請勿再使用原付款連結。取消不代表退款；如已付款，請聯絡商家核對。", "Order closed. Do not use the old payment link. Cancellation is not a refund; contact the seller if already paid.")
@@ -1065,8 +1103,11 @@ func (a *App) showOrderNotice(ctx context.Context, chatID int64, messageID int, 
 	}
 	rows := make([][]models.InlineKeyboardButton, 0, 4)
 	if hasDelivery(order) {
-		text += "\n\n" + tr(locale, "📄 交付内容已就绪，下载 TXT 查看完整卡密和使用说明。请妥善保管文件。", "📄 交付內容已就緒，下載 TXT 查看完整卡密和使用說明。請妥善保管檔案。", "📄 Delivery is ready. Download the TXT for complete codes and instructions. Keep it private.")
+		text += "\n\n" + tr(locale, "📄 下载 TXT 查看当前已交付内容与说明。部分交付不代表整单完成；请妥善保管文件。", "📄 下載 TXT 查看目前已交付內容與說明。部分交付不代表整單完成；請妥善保管檔案。", "📄 Download TXT for currently available content and instructions. Partial delivery is not completion. Keep the file private.")
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📄 下载交付 TXT", "📄 下載交付 TXT", "📄 Download delivery TXT"), CallbackData: fmt.Sprintf("file:%d", order.OrderID)}})
+	}
+	if !hasDelivery(order) && (order.Status == "completed" || order.Status == "delivered") {
+		text += "\n\n" + tr(locale, "商店已标记交付，但没有可下载的内容。请查看实际收货方式或联系商家。", "商店已標記交付，但沒有可下載的內容。請查看實際收貨方式或聯絡商家。", "The store marks this delivered, but no downloadable content is available. Check the delivery method or contact the seller.")
 	}
 	if order.Status == "pending_payment" {
 		text += "\n\n" + pendingDeadline(locale, order.ExpiresAt, time.Now())
@@ -1075,9 +1116,9 @@ func (a *App) showOrderNotice(ctx context.Context, chatID int64, messageID int, 
 		}
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: fmt.Sprintf("order:%d", order.OrderID)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:1"}})
-	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: orderViewCallback(order.OrderID, code, page)}})
+	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单列表", "‹ 返回訂單列表", "‹ Back to orders"), CallbackData: fmt.Sprintf("orders:%s:%d", code, page)}})
+	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, messageID > 0)
 }
 
 func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, messageID int) {
@@ -1482,18 +1523,21 @@ func skuLabel(sku dujiao.SKU) string {
 
 func orderStatus(locale, status string) string {
 	statuses := map[string][3]string{
-		"pending_payment": {"待支付", "待付款", "Pending payment"},
-		"paid":            {"已支付", "已付款", "Paid"},
-		"processing":      {"处理中", "處理中", "Processing"},
-		"completed":       {"已完成", "已完成", "Completed"},
-		"delivered":       {"已交付", "已交付", "Delivered"},
-		"cancelled":       {"已取消", "已取消", "Cancelled"},
-		"canceled":        {"已取消", "已取消", "Cancelled"},
-		"refunded":        {"已退款", "已退款", "Refunded"},
+		"pending_payment":     {"待支付", "待付款", "Pending payment"},
+		"paid":                {"已支付", "已付款", "Paid"},
+		"processing":          {"处理中", "處理中", "Processing"},
+		"fulfilling":          {"交付中", "交付中", "Fulfilling"},
+		"partially_delivered": {"部分交付", "部分交付", "Partially delivered"},
+		"partially_refunded":  {"部分退款", "部分退款", "Partially refunded"},
+		"completed":           {"已完成", "已完成", "Completed"},
+		"delivered":           {"已交付", "已交付", "Delivered"},
+		"cancelled":           {"已取消", "已取消", "Cancelled"},
+		"canceled":            {"已取消", "已取消", "Cancelled"},
+		"refunded":            {"已退款", "已退款", "Refunded"},
 	}
 	values, ok := statuses[status]
 	if !ok {
-		return status
+		return tr(locale, "状态待核对", "狀態待核對", "Status unconfirmed")
 	}
 	switch locale {
 	case "zh-TW":
@@ -1502,28 +1546,6 @@ func orderStatus(locale, status string) string {
 		return values[2]
 	default:
 		return values[0]
-	}
-}
-
-func orderFilterStatus(code string) string {
-	switch code {
-	case "p":
-		return "pending_payment"
-	case "c":
-		return "completed"
-	default:
-		return ""
-	}
-}
-
-func orderFilterCode(status string) string {
-	switch status {
-	case "pending_payment":
-		return "p"
-	case "completed":
-		return "c"
-	default:
-		return "a"
 	}
 }
 

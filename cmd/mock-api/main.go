@@ -213,6 +213,15 @@ func dujiaoHandler(w http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(path, "/catalog/products/") {
 			id, _ := strconv.ParseUint(strings.TrimPrefix(path, "/catalog/products/"), 10, 64)
 			data = demoProductDetail(uint(id))
+		} else if strings.HasPrefix(path, "/orders/by-order-no/") && request.Method == http.MethodGet {
+			order := demoOrderByNumber(strings.TrimPrefix(path, "/orders/by-order-no/"), request.URL.Query().Get("channel_user_id"))
+			if order == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 404, "error_code": "order_not_found"})
+				return
+			}
+			data = order
 		} else if strings.HasPrefix(path, "/orders/") {
 			orderPath := strings.TrimPrefix(path, "/orders/")
 			if strings.HasSuffix(orderPath, "/cancel") {
@@ -437,6 +446,17 @@ func demoOrderDetail(orderID uint) map[string]any {
 		}
 	}
 	return map[string]any{}
+}
+
+func demoOrderByNumber(number, userID string) map[string]any {
+	orderMu.Lock()
+	defer orderMu.Unlock()
+	for _, order := range demoOrders {
+		if userID != "" && order["order_no"] == number && order["channel_user_id"] == userID {
+			return cloneMap(order)
+		}
+	}
+	return nil
 }
 
 func demoCancelOrder(orderID uint) map[string]any {
