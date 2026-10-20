@@ -24,6 +24,7 @@ type deliveryFixture struct {
 	order             dujiao.OrderDetail
 	files             [][]byte
 	texts             []string
+	markups           []string
 	names, recipients []string
 	lookups           int
 	failure           int
@@ -88,6 +89,7 @@ func newDeliveryFixture(t *testing.T) (*App, *deliveryFixture) {
 			}
 		} else if method == "sendMessage" || method == "editMessageText" {
 			f.texts = append(f.texts, r.FormValue("text"))
+			f.markups = append(f.markups, r.FormValue("reply_markup"))
 		}
 		fmt.Fprint(w, `{"ok":true,"result":{"message_id":91,"chat":{"id":42,"type":"private"}}}`)
 	}))

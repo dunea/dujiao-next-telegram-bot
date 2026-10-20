@@ -55,7 +55,7 @@ func TestTelegramBulkDeliveryTXT(t *testing.T) {
 	f.click(menu, button(menu, "pay:", fmt.Sprintf(":%d:0", f.paymentChannel)))
 	s.wait(func() bool { return len(f.state().Payments) == 1 })
 	f.pay(0, "success")
-	f.waitText("订单已完成交付")
+	notice := f.waitText("订单已完成交付")
 	orders, err := c.Orders(ctx, strconv.FormatInt(buyerID, 10), "zh-CN", "", 1, 20)
 	orders = must(t, "bulk delivered orders", orders, err)
 	if orders.Total != 1 {
@@ -70,10 +70,10 @@ func TestTelegramBulkDeliveryTXT(t *testing.T) {
 	if len(strings.Split(payload, "\n")) != 2500 {
 		t.Fatal("official bulk delivery lost cards")
 	}
-	f.command("/orders")
-	menu = f.waitButton("order:")
-	f.click(menu, button(menu, "order:", fmt.Sprint(order.OrderID)))
-	view := f.waitButton("file:")
+	view := notice
+	if button(view, "file:", "") != fmt.Sprintf("file:%d", order.OrderID) || button(view, "order:", "") != fmt.Sprintf("order:%d", order.OrderID) {
+		t.Fatal("bulk notification missing exact order/TXT buttons")
+	}
 	if strings.Contains(view.Text, "SYNTHETIC-BULK-") || len(view.Text) > 4096 {
 		t.Fatal("bulk summary exposed/truncated cards")
 	}
@@ -92,6 +92,8 @@ func TestTelegramBulkDeliveryTXT(t *testing.T) {
 	f.waitText("TXT 已发送")
 	s.docker("restart", f.bot)
 	f.healthy()
+	f.click(notice, button(notice, "file:", ""))
+	f.waitText("TXT 已发送")
 	f.command("/orders")
 	menu = f.waitButton("order:")
 	f.click(menu, button(menu, "order:", fmt.Sprint(order.OrderID)))

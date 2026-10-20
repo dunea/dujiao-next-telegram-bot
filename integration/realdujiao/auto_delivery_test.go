@@ -104,7 +104,10 @@ func TestTelegramAutoDelivery(t *testing.T) {
 			detail, err = c.Order(ctx, strconv.FormatInt(buyerID, 10), "zh-CN", orderID)
 			return err == nil && detail.Status == "completed" && deliveryPayload(detail) != ""
 		})
-		f.waitText("订单已完成交付")
+		notice := f.waitText("订单已完成交付")
+		if button(notice, "file:", "") != fmt.Sprintf("file:%d", orderID) || button(notice, "order:", "") != fmt.Sprintf("order:%d", orderID) {
+			t.Fatal("automatic notification did not target exact order/TXT")
+		}
 		if detail.PaidAmount != map[int]string{2: "6.50", 1: "3.25"}[quantity] || detail.WalletPaidAmount != "0.00" {
 			t.Fatal("automatic order payment amount mismatch")
 		}
@@ -167,10 +170,7 @@ func TestTelegramAutoDelivery(t *testing.T) {
 		if replayed.Status != "completed" || deliveryPayload(replayed) != payload {
 			t.Fatal("duplicate provider callback changed fulfillment")
 		}
-		f.command("/orders")
-		menu = f.waitButton("order:")
-		f.click(menu, button(menu, "order:", fmt.Sprint(orderID)))
-		view := f.waitButton("file:")
+		view := notice
 		for _, secret := range secrets {
 			if strings.Contains(view.Text, secret) {
 				t.Fatal("Telegram order summary exposed cards")
@@ -202,6 +202,12 @@ func TestTelegramAutoDelivery(t *testing.T) {
 			t.Fatal("complete TXT differs from official fulfillment")
 		}
 		f.waitText("TXT 已发送")
+		f.click(view, button(view, "file:", ""))
+		f.waitText("TXT 已发送")
+		f.command("/orders")
+		menu = f.waitButton("order:")
+		f.click(menu, button(menu, "order:", fmt.Sprint(orderID)))
+		view = f.waitButton("file:")
 		f.click(view, button(view, "file:", ""))
 		f.waitText("TXT 已发送")
 		if index == 0 {

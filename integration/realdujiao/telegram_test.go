@@ -165,7 +165,12 @@ func TestTelegramEndToEnd(t *testing.T) {
 	flow.control("/test/telegram-fault", map[string]any{"Method": "sendMessage", "Code": 429, "Times": 1, "RetryAfter": 1}, nil)
 	flow.pay(0, "success")
 	flow.assertWallet(c, "100.00", 1)
-	flow.waitText("余额充值成功")
+	rechargeNotice := flow.waitText("余额充值成功")
+	if button(rechargeNotice, "wallet", "") != "wallet" {
+		t.Fatal("recharge notice missing balance shortcut")
+	}
+	flow.click(rechargeNotice, "wallet")
+	flow.waitText("100.00 CNY")
 	flow.pay(0, "success")
 	flow.assertWallet(c, "100.00", 1)
 	flow.command("/products")
@@ -197,7 +202,15 @@ func TestTelegramEndToEnd(t *testing.T) {
 		}
 	}
 	flow.pay(1, "success")
-	flow.waitText("订单支付成功")
+	paidNotice := flow.waitText("订单支付成功")
+	if button(paidNotice, "order:", "") != fmt.Sprintf("order:%d", orderID) || button(paidNotice, "file:", "") != "" {
+		t.Fatal("paid notice did not offer the exact order or advertised premature TXT")
+	}
+	flow.click(paidNotice, button(paidNotice, "order:", ""))
+	paidView := flow.waitText("订单详情")
+	if button(paidView, "file:", "") != "" {
+		t.Fatal("manual order exposed delivery before fulfillment")
+	}
 	flow.pay(1, "success")
 	detail, err := c.Order(ctx, strconv.FormatInt(buyerID, 10), "zh-CN", orderID)
 	detail = must(t, "paid order", detail, err)
@@ -217,15 +230,17 @@ func TestTelegramEndToEnd(t *testing.T) {
 	if !ok || parseErr != nil || fulfilledID == 0 {
 		t.Fatal("fulfilled notification did not identify real order")
 	}
+	if button(fulfilled, "file:", "") != fmt.Sprintf("file:%d", orderID) || button(fulfilled, "order:", "") != fmt.Sprintf("order:%d", orderID) || strings.Contains(fulfilled.Text, "SYNTHETIC-DELIVERY-ONLY") {
+		t.Fatal("fulfilled notice missing exact private shortcuts or exposed cards")
+	}
+	flow.click(fulfilled, button(fulfilled, "file:", ""))
+	flow.waitMessage(func(m tgMessage) bool { return m.Method == "sendDocument" && m.FileBytes > 0 })
+	flow.waitText("TXT 已发送")
 	flow.command("/orders")
 	menu = flow.waitButton("order:")
 	flow.click(menu, button(menu, "order:", ""))
 	menu = flow.waitButton("file:")
-	if strings.Contains(menu.Text, "SYNTHETIC-DELIVERY-ONLY") {
-		t.Fatal("delivery leaked into summary")
-	}
 	flow.click(menu, button(menu, "file:", ""))
-	flow.waitMessage(func(m tgMessage) bool { return m.Method == "sendDocument" && m.FileBytes > 0 })
 	flow.waitText("TXT 已发送")
 	// Notifications may be retried/reordered, never replaying a financial API.
 	event := callback.Event{OrderID: uint(fulfilledID), TelegramUserID: strconv.FormatInt(buyerID, 10)}
@@ -240,6 +255,17 @@ func TestTelegramEndToEnd(t *testing.T) {
 	flow.signed(f, "order-fulfilled", event, 200)
 	if flow.countNotifications() != before {
 		t.Fatal("Bot restart forgot completed receipt")
+	}
+	flow.click(fulfilled, button(fulfilled, "file:", ""))
+	flow.waitText("TXT 已发送")
+	files := 0
+	for _, m := range flow.state().Messages {
+		if m.Method == "sendDocument" {
+			files++
+		}
+	}
+	if files != 1 {
+		t.Fatal("notice/order/restart entry points duplicated manual TXT")
 	}
 	// Only stop this test's Redis; no money mutation is attempted during outage.
 	s.docker("stop", "--time", "15", s.redis)

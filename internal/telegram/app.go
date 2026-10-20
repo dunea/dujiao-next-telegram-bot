@@ -139,9 +139,9 @@ func (a *App) Notify(ctx context.Context, userID int64, eventType string, event 
 	var text string
 	switch eventType {
 	case "order-paid":
-		text = "✅ " + tr(locale, "订单支付成功，正在处理。", "訂單付款成功，正在處理。", "Your order has been paid and is being processed.")
+		text = "✅ " + tr(locale, "订单支付成功。可查看订单进度，交付完成后会通知你。", "訂單付款成功。可查看訂單進度，交付完成後會通知你。", "Your order has been paid. View its progress below; we will notify you when delivery is ready.")
 	case "order-fulfilled":
-		text = "🎉 " + tr(locale, "订单已完成交付，请前往商店订单详情查看交付内容。", "訂單已完成交付，請前往商店訂單詳情查看交付內容。", "Your order has been fulfilled. Open the store order details to view delivery.")
+		text = "🎉 " + tr(locale, "订单已完成交付。点击下方按钮下载完整 TXT，请妥善保管。", "訂單已完成交付。點擊下方按鈕下載完整 TXT，請妥善保管。", "Your order has been fulfilled. Download the complete TXT below and keep it private.")
 	case "wallet-recharge-succeeded":
 		text = "✅ " + tr(locale, "余额充值成功：", "餘額儲值成功：", "Wallet recharge succeeded: ") + html.EscapeString(event.Amount+" "+event.Currency)
 	default:
@@ -150,7 +150,7 @@ func (a *App) Notify(ctx context.Context, userID int64, eventType string, event 
 	if event.OrderID > 0 {
 		text += fmt.Sprintf("\n%s%d", tr(locale, "订单 ID：", "訂單 ID：", "Order ID: "), event.OrderID)
 	}
-	_, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: a.homeKeyboard(locale)})
+	_, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: userID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: notificationKeyboard(locale, eventType, event.OrderID)})
 	if err == nil {
 		a.ops.Record(operations.Event{Action: auditCallbackAction(eventType), Outcome: operations.Succeeded, UserID: userID, ResourceID: event.OrderID, Dedupe: sha256.Sum256([]byte(event.RechargeNo))})
 	}
