@@ -36,6 +36,7 @@ type pendingFixture struct {
 	listCalls                     []string
 	lookupCalls, lookupFailure    int
 	lookupMismatch                bool
+	orderReadFailure              bool
 }
 
 func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
@@ -111,6 +112,10 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 			data = order
 		case "/api/v1/channel/orders/7":
 			f.reads++
+			if f.orderReadFailure {
+				fail(503, "order_fetch_failed")
+				return
+			}
 			data = f.order
 		case "/api/v1/channel/payments/latest":
 			if f.latestFailure {

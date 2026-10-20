@@ -396,6 +396,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := state.Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "support" {
+		a.handleOrderSupport(ctx, query, parts)
+		return
+	}
 	if parts[0] == "resume" || parts[0] == "payqr" || parts[0] == "cancelgo" || parts[0] == "cancelback" || parts[0] == "pay" {
 		a.handlePendingCallback(ctx, query, parts)
 		return
@@ -1116,6 +1120,7 @@ func (a *App) renderOrder(ctx context.Context, chatID int64, messageID int, loca
 		}
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
 	}
+	rows = append(rows, a.orderSupportButtons(locale, order, code, page))
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: orderViewCallback(order.OrderID, code, page)}})
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单列表", "‹ 返回訂單列表", "‹ Back to orders"), CallbackData: fmt.Sprintf("orders:%s:%d", code, page)}})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, messageID > 0)
@@ -1223,11 +1228,19 @@ func (a *App) showLanguage(ctx context.Context, chatID int64, edit bool, message
 }
 
 func (a *App) showHelp(ctx context.Context, chatID int64, locale string) {
-	a.send(ctx, chatID, a.helpText(locale), a.backKeyboard(locale))
+	a.send(ctx, chatID, a.helpText(locale), a.helpKeyboard(locale))
 }
 
 func (a *App) showHelpEdit(ctx context.Context, chatID int64, messageID int, locale string) {
-	a.edit(ctx, chatID, messageID, a.helpText(locale), a.backKeyboard(locale))
+	a.edit(ctx, chatID, messageID, a.helpText(locale), a.helpKeyboard(locale))
+}
+
+func (a *App) helpKeyboard(locale string) models.InlineKeyboardMarkup {
+	keyboard := a.backKeyboard(locale)
+	if target := orderSupportTarget(a.botConfig().Basic.SupportURL, ""); target.URL != "" {
+		keyboard.InlineKeyboard = append([][]models.InlineKeyboardButton{{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: target.URL}}}, keyboard.InlineKeyboard...)
+	}
+	return keyboard
 }
 
 func (a *App) helpText(locale string) string {
@@ -1262,8 +1275,8 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 	} else {
 		rows = configuredMenuRows(config.Menu.Items, locale)
 	}
-	if safeHTTPURL(config.Basic.SupportURL) {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: config.Basic.SupportURL}})
+	if contact := orderSupportTarget(config.Basic.SupportURL, ""); contact.URL != "" {
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "联系客服", "聯絡客服", "Support"), URL: contact.URL}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📣 公告订阅", "📣 公告訂閱", "📣 Announcements"), CallbackData: "bcsubscriptions"}})
 	return models.InlineKeyboardMarkup{InlineKeyboard: rows}
