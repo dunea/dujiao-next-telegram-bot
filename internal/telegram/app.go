@@ -21,6 +21,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/delivery"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
@@ -42,6 +43,7 @@ type App struct {
 	broadcastStore  broadcast.Store
 	broadcastEngine *broadcast.Engine
 	broadcastMax    int
+	deliveries      delivery.Store
 
 	configMu sync.RWMutex
 	config   dujiao.BotConfig
@@ -84,6 +86,9 @@ func New(token string, api *dujiao.Client, config dujiao.BotConfig, defaultLocal
 		return nil, fmt.Errorf("initialize Telegram bot: %w", err)
 	}
 	app.bot = bot
+	if provider, ok := app.sessions.(interface{ DeliveryReceipts() delivery.Store }); ok {
+		app.deliveries = provider.DeliveryReceipts()
+	}
 	app.ConfigureOperations(nil, ratelimit.DefaultPolicy(), logger)
 	return app, nil
 }
@@ -377,6 +382,10 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	locale := state.Locale
 	parts := strings.Split(query.Data, ":")
+	if parts[0] == "file" || parts[0] == "fileretry" {
+		a.handleDeliveryCallback(ctx, query, parts)
+		return
+	}
 	if parts[0] == "qtyinput" || parts[0] == "qtyback" || parts[0] == "qtyedit" {
 		a.handleQuantityCallback(ctx, query, parts)
 		return
@@ -1063,14 +1072,17 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 }
 
 func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID int64, orderID uint) {
+	if chatID != userID || userID <= 0 {
+		return
+	}
 	locale := a.sessions.Get(userID).Locale
 	order, err := a.api.Order(ctx, strconv.FormatInt(userID, 10), locale, orderID)
-	if err != nil {
-		a.apiFailure(ctx, chatID, locale, "get order", err)
+	if err != nil || order.OrderID != orderID {
+		a.deliveryLookupFailure(ctx, chatID, locale)
 		return
 	}
 	text := "<b>" + tr(locale, "订单详情", "訂單詳情", "Order details") + "</b>"
-	text += "\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + "<code>" + html.EscapeString(order.OrderNo) + "</code>"
+	text += "\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + "<code>" + html.EscapeString(truncate(order.OrderNo, 100)) + "</code>"
 	text += "\n" + tr(locale, "状态：", "狀態：", "Status: ") + html.EscapeString(orderStatus(locale, order.Status))
 	text += "\n" + tr(locale, "金额：", "金額：", "Total: ") + html.EscapeString(order.TotalAmount+" "+order.Currency)
 	for index, item := range order.Items {
@@ -1078,30 +1090,17 @@ func (a *App) showOrder(ctx context.Context, chatID int64, messageID int, userID
 			text += "\n…"
 			break
 		}
-		text += "\n\n<b>" + html.EscapeString(item.ProductTitle) + "</b>"
+		text += "\n\n<b>" + html.EscapeString(truncate(item.ProductTitle, 100)) + "</b>"
 		if item.SKUName != "" {
-			text += " · " + html.EscapeString(item.SKUName)
+			text += " · " + html.EscapeString(truncate(item.SKUName, 60))
 		}
 		text += fmt.Sprintf("\n× %d　%s %s", item.Quantity, html.EscapeString(item.Subtotal), html.EscapeString(order.Currency))
 	}
-	if instructions := strings.TrimSpace(order.FulfillmentInstructions); instructions != "" {
-		text += "\n\n<b>" + tr(locale, "使用说明", "使用說明", "Instructions") + "</b>\n" + html.EscapeString(truncate(instructions, 500))
-	}
-	if delivery := formatFulfillmentPayload(order.FulfillmentResult); delivery != "" {
-		text += "\n\n<b>" + tr(locale, "交付内容", "交付內容", "Delivery") + "</b>\n<pre>" + html.EscapeString(truncate(delivery, 1200)) + "</pre>"
-	}
-	for index, child := range order.Children {
-		if index >= 1 {
-			break
-		}
-		if child.Fulfillment == nil {
-			continue
-		}
-		if delivery := formatFulfillmentPayload(child.Fulfillment.Payload); delivery != "" {
-			text += "\n\n<b>" + html.EscapeString(child.OrderNo) + "</b>\n<pre>" + html.EscapeString(truncate(delivery, 600)) + "</pre>"
-		}
-	}
 	rows := make([][]models.InlineKeyboardButton, 0, 4)
+	if hasDelivery(order) {
+		text += "\n\n" + tr(locale, "📄 交付内容已就绪，下载 TXT 查看完整卡密和使用说明。请妥善保管文件。", "📄 交付內容已就緒，下載 TXT 查看完整卡密和使用說明。請妥善保管檔案。", "📄 Delivery is ready. Download the TXT for complete codes and instructions. Keep it private.")
+		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "📄 下载交付 TXT", "📄 下載交付 TXT", "📄 Download delivery TXT"), CallbackData: fmt.Sprintf("file:%d", order.OrderID)}})
+	}
 	if order.Status == "pending_payment" {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method"), CallbackData: fmt.Sprintf("orderpay:%d", order.OrderID)}})
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
@@ -1573,6 +1572,7 @@ func orderStatus(locale, status string) string {
 		"paid":            {"已支付", "已付款", "Paid"},
 		"processing":      {"处理中", "處理中", "Processing"},
 		"completed":       {"已完成", "已完成", "Completed"},
+		"delivered":       {"已交付", "已交付", "Delivered"},
 		"cancelled":       {"已取消", "已取消", "Cancelled"},
 		"canceled":        {"已取消", "已取消", "Cancelled"},
 		"refunded":        {"已退款", "已退款", "Refunded"},

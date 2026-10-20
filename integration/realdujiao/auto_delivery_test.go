@@ -4,10 +4,10 @@ package realdujiao
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"strconv"
 	"strings"
 	"testing"
@@ -170,24 +170,58 @@ func TestTelegramAutoDelivery(t *testing.T) {
 		f.command("/orders")
 		menu = f.waitButton("order:")
 		f.click(menu, button(menu, "order:", fmt.Sprint(orderID)))
-		view := f.waitMessage(func(m tgMessage) bool { return strings.Contains(m.Text, html.EscapeString(lines[0])) })
-		for _, line := range lines {
-			if !strings.Contains(view.Text, html.EscapeString(line)) {
-				t.Fatal("Telegram omitted/failed to escape delivered card")
-			}
-		}
+		view := f.waitButton("file:")
 		for _, secret := range secrets {
-			if !seen[secret] && strings.Contains(view.Text, html.EscapeString(secret)) {
-				t.Fatal("Telegram leaked another order/unallocated card")
+			if strings.Contains(view.Text, secret) {
+				t.Fatal("Telegram order summary exposed cards")
 			}
 		}
+		f.click(view, button(view, "file:", ""))
+		file := f.waitMessage(func(m tgMessage) bool { return m.Method == "sendDocument" })
+		// Official single-child order: parent result is a mirror of the child.
+		expected := "Order / 订单: " + detail.OrderNo + "\n\n"
+		if detail.FulfillmentInstructions != "" {
+			expected += "=== Instructions / 使用说明 ===\n" + detail.FulfillmentInstructions + "\n\n"
+		}
+		for _, item := range detail.Items {
+			if item.Instructions != "" {
+				expected += "=== " + item.ProductTitle + " / " + item.SKUName + " ===\n" + item.Instructions + "\n\n"
+			}
+		}
+		for _, child := range detail.Children {
+			if child.Fulfillment != nil {
+				expected += "=== Sub-order / 子订单: " + child.OrderNo + " ===\n" + fmt.Sprint(child.Fulfillment.Payload) + "\n"
+				if child.Fulfillment.Instructions != "" {
+					expected += "Instructions / 使用说明:\n" + child.Fulfillment.Instructions + "\n"
+				}
+				expected += "\n"
+			}
+		}
+		digest := sha256.Sum256([]byte(expected))
+		if file.FileSHA256 != fmt.Sprintf("%x", digest) || file.FileBytes != len(expected) || file.Filename != fmt.Sprintf("delivery-%d.txt", orderID) {
+			t.Fatal("complete TXT differs from official fulfillment")
+		}
+		f.waitText("TXT 已发送")
+		f.click(view, button(view, "file:", ""))
+		f.waitText("TXT 已发送")
 		if index == 0 {
 			s.docker("restart", f.bot)
 			f.healthy()
 			f.command("/orders")
 			menu = f.waitButton("order:")
 			f.click(menu, button(menu, "order:", fmt.Sprint(orderID)))
-			f.waitMessage(func(m tgMessage) bool { return strings.Contains(m.Text, html.EscapeString(lines[0])) })
+			view = f.waitButton("file:")
+			f.click(view, button(view, "file:", ""))
+			f.waitText("TXT 已发送")
+		}
+		files := 0
+		for _, m := range f.state().Messages {
+			if m.Method == "sendDocument" {
+				files++
+			}
+		}
+		if files != index+1 {
+			t.Fatal("repeat click/restart resent TXT")
 		}
 	}
 	f.command("/products")
@@ -254,7 +288,7 @@ func (f *telegramFlow) cards(product, sku uint) []stockCard {
 func (f *telegramFlow) assertStock(product, sku uint, available, reserved, used int) {
 	var stats struct{ Total, Available, Reserved, Used int }
 	f.s.admin("GET", fmt.Sprintf("/card-secrets/stats?product_id=%d&sku_id=%d", product, sku), f.s.login(), nil, &stats)
-	if stats.Total != 3 || stats.Available != available || stats.Reserved != reserved || stats.Used != used {
+	if stats.Total != available+reserved+used || stats.Available != available || stats.Reserved != reserved || stats.Used != used {
 		f.s.t.Fatal("automatic stock counters mismatch")
 	}
 }

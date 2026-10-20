@@ -26,11 +26,14 @@ import (
 const buyerID int64 = 910000001
 
 type tgMessage struct {
-	Method   string
-	ID       int
-	ChatID   int64
-	Text     string
-	Keyboard json.RawMessage
+	Filename   string
+	FileSHA256 string
+	FileBytes  int
+	Method     string
+	ID         int
+	ChatID     int64
+	Text       string
+	Keyboard   json.RawMessage
 }
 type peerState struct {
 	Messages                                  []tgMessage
@@ -217,7 +220,13 @@ func TestTelegramEndToEnd(t *testing.T) {
 	flow.command("/orders")
 	menu = flow.waitButton("order:")
 	flow.click(menu, button(menu, "order:", ""))
-	flow.waitText("SYNTHETIC-DELIVERY-ONLY")
+	menu = flow.waitButton("file:")
+	if strings.Contains(menu.Text, "SYNTHETIC-DELIVERY-ONLY") {
+		t.Fatal("delivery leaked into summary")
+	}
+	flow.click(menu, button(menu, "file:", ""))
+	flow.waitMessage(func(m tgMessage) bool { return m.Method == "sendDocument" && m.FileBytes > 0 })
+	flow.waitText("TXT 已发送")
 	// Notifications may be retried/reordered, never replaying a financial API.
 	event := callback.Event{OrderID: uint(fulfilledID), TelegramUserID: strconv.FormatInt(buyerID, 10)}
 	flow.signed(f, "order-paid", event, 200)

@@ -35,6 +35,7 @@ const (
 	BroadcastJob      Action  = "broadcast.job"
 	BroadcastDelivery Action  = "broadcast.delivery"
 	Subscription      Action  = "broadcast.subscription"
+	DeliveryTXT       Action  = "delivery.txt"
 	Attempt           Outcome = "attempt"
 	Succeeded         Outcome = "succeeded"
 	Rejected          Outcome = "rejected"
@@ -62,7 +63,7 @@ type Event struct {
 // accepted into the event: upstream and user-controlled strings cannot leak.
 func (e Event) valid() bool {
 	switch e.Action {
-	case Order, Payment, OrderCancel, Recharge, GiftCard, Affiliate, Withdrawal, WithdrawalUnlock, CallbackPaid, CallbackFulfilled, CallbackRecharge, Session, Access, Callback, AdminTest, BroadcastDraft, BroadcastJob, BroadcastDelivery, Subscription:
+	case Order, Payment, OrderCancel, Recharge, GiftCard, Affiliate, Withdrawal, WithdrawalUnlock, CallbackPaid, CallbackFulfilled, CallbackRecharge, Session, Access, Callback, AdminTest, BroadcastDraft, BroadcastJob, BroadcastDelivery, Subscription, DeliveryTXT:
 	default:
 		return false
 	}

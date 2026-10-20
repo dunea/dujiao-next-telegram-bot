@@ -5,6 +5,7 @@ package main
 
 import (
 	"crypto/md5"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -27,11 +28,14 @@ const testToken = "999001:isolated-e2e"
 const testUser int64 = 910000001
 
 type message struct {
-	Method   string
-	ID       int
-	ChatID   int64
-	Text     string
-	Keyboard json.RawMessage
+	Filename   string
+	FileSHA256 string
+	FileBytes  int
+	Method     string
+	ID         int
+	ChatID     int64
+	Text       string
+	Keyboard   json.RawMessage
 }
 type payment struct{ No, Trade, Amount string }
 type fault struct {
@@ -211,7 +215,7 @@ func (p *peer) telegram(w http.ResponseWriter, r *http.Request) {
 		if len(p.updates) == 0 {
 			time.Sleep(80 * time.Millisecond)
 		}
-	case "sendMessage", "editMessageText", "sendPhoto":
+	case "sendMessage", "editMessageText", "sendPhoto", "sendDocument":
 		uid, _ := strconv.ParseInt(r.FormValue("chat_id"), 10, 64)
 		if uid != testUser {
 			http.Error(w, "non-synthetic recipient", 400)
@@ -235,7 +239,23 @@ func (p *peer) telegram(w http.ResponseWriter, r *http.Request) {
 		if len(keyboard) == 0 {
 			keyboard = json.RawMessage(`{}`)
 		}
-		p.messages = append(p.messages, message{Method: method, ID: id, ChatID: uid, Text: text, Keyboard: keyboard})
+		m := message{Method: method, ID: id, ChatID: uid, Text: text, Keyboard: keyboard}
+		if method == "sendDocument" {
+			file, header, err := r.FormFile("document")
+			if err != nil {
+				http.Error(w, "missing document", 400)
+				return
+			}
+			body, readErr := io.ReadAll(io.LimitReader(file, (4<<20)+1))
+			_ = file.Close()
+			if readErr != nil || len(body) > 4<<20 {
+				http.Error(w, "invalid document", 400)
+				return
+			}
+			digest := sha256.Sum256(body)
+			m.Filename, m.FileSHA256, m.FileBytes = header.Filename, hex.EncodeToString(digest[:]), len(body)
+		}
+		p.messages = append(p.messages, m)
 		result = map[string]any{"message_id": id, "date": time.Now().Unix(), "chat": map[string]any{"id": uid, "type": "private"}, "from": map[string]any{"id": 999001, "is_bot": true, "first_name": "E2E"}, "text": text}
 	default:
 		http.Error(w, "unsupported Telegram method", 404)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/broadcast"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/delivery"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/ratelimit"
 )
 
@@ -28,6 +29,19 @@ func TestRedisAOFRestart(t *testing.T) {
 	ctx := context.Background()
 	switch phase {
 	case "seed":
+		for i, status := range []string{"sent", "posting", "retry"} {
+			key := delivery.Key(85001, uint(900+i))
+			if _, err := r.DeliveryReceipts().Update(ctx, key, func(s *delivery.Receipt) error {
+				s.Status, s.Token, s.Fingerprint = status, rand.Text(), key
+				s.NotBefore = time.Now().Add(time.Hour)
+				if status == "sent" {
+					s.MessageID = 91
+				}
+				return nil
+			}); err != nil {
+				t.Fatal("seed TXT receipt", err)
+			}
+		}
 		for i, status := range []string{"sent", "posting", "retry"} {
 			key := callback.ReceiptKey(85001, callback.Event{OrderID: uint(700 + i)})
 			if _, err := r.CallbackReceipts().Update(ctx, key, func(s *callback.Receipt) error {
@@ -65,6 +79,15 @@ func TestRedisAOFRestart(t *testing.T) {
 		}
 	case "verify":
 		var callbackKeys []string
+		for i, status := range []string{"sent", "posting", "retry"} {
+			key := delivery.Key(85001, uint(900+i))
+			s, err := r.DeliveryReceipts().Update(ctx, key, func(*delivery.Receipt) error { return nil })
+			if err != nil || s.Status != status || !s.NotBefore.After(time.Now()) {
+				t.Fatal("AOF lost TXT guard", err)
+			}
+			callbackKeys = append(callbackKeys, r.prefix+":delivery:v1:"+key)
+		}
+		callbackKeys = append(callbackKeys, r.prefix+":delivery:index:v1")
 		for i, status := range []string{"sent", "posting", "retry"} {
 			key := callback.ReceiptKey(85001, callback.Event{OrderID: uint(700 + i)})
 			s, err := r.CallbackReceipts().Update(ctx, key, func(*callback.Receipt) error { return nil })
