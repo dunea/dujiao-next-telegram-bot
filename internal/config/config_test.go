@@ -1,9 +1,51 @@
 package config
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestExplicitEnvironmentMatchesRuntimeWithoutChangingProcess(t *testing.T) {
+	values := map[string]string{"DUJIAO_BASE_URL": "https://store.example.net/", "DUJIAO_CHANNEL_KEY": "channel-key", "DUJIAO_CHANNEL_SECRET": "channel-secret", "BOT_REDIS_URL": "redis://127.0.0.1:6379/0", "BOT_SESSION_ENCRYPTION_KEY": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", "BOT_DEFAULT_LOCALE": "en-US", "BOT_LOG_LEVEL": "WARN", "BOT_ADMIN_USER_IDS": "42,43", "BOT_RATE_WRITE_PER_MINUTE": "9"}
+	for k, v := range values {
+		t.Setenv(k, v)
+	}
+	process, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := LoadFrom(func(k string) string { return os.Getenv(k) })
+	if err != nil || !reflect.DeepEqual(process, explicit) {
+		t.Fatal("explicit loader changed runtime behavior")
+	}
+	legacyHash := sha256.Sum256([]byte(explicit.DujiaoBaseURL + "\x00" + explicit.DujiaoChannelKey))
+	if explicit.SessionPrefix() != fmt.Sprintf("dujiao-bot:v1:{%x}", legacyHash[:16]) {
+		t.Fatal("Redis namespace changed")
+	}
+	var wg sync.WaitGroup
+	for range 30 {
+		wg.Go(func() {
+			cfg, err := LoadFrom(func(k string) string {
+				if k == "DUJIAO_CHANNEL_KEY" {
+					return "independent-key"
+				}
+				return os.Getenv(k)
+			})
+			if err != nil || cfg.DujiaoChannelKey != "independent-key" {
+				t.Error("explicit configuration failed")
+			}
+		})
+	}
+	wg.Wait()
+	if os.Getenv("DUJIAO_CHANNEL_KEY") != "channel-key" {
+		t.Fatal("explicit loader mutated the process")
+	}
+}
 
 func TestBroadcastConfigValidation(t *testing.T) {
 	t.Setenv("DUJIAO_BASE_URL", "https://shop.example.com")

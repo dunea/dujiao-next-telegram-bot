@@ -60,6 +60,7 @@ for release_target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
   mkdir "$bundle_dir/docs"
   cp docs/acceptance-v0.4.0.md "$bundle_dir/docs/"
   cp docs/compatibility.md "$bundle_dir/docs/"
+  cp docs/callbacks-and-e2e.md docs/soak-and-auto-delivery.md docs/operations-v1.md "$bundle_dir/docs/"
   COPYFILE_DISABLE=1 tar -czf "$release_dir/$bundle_name.tar.gz" -C "$release_dir" "$bundle_name"
 done
 

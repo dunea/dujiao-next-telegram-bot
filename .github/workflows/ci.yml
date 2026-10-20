@@ -55,6 +55,9 @@ jobs:
       - name: Check offline version command
         run: dist/dujiao-next-telegram-bot --version
 
+      - name: Check offline setup entry point
+        run: dist/dujiao-next-telegram-bot setup --help
+
       - name: Verify real Redis AOF restart recovery
         env:
           BOT_TEST_REDIS_URL: redis://127.0.0.1:16379

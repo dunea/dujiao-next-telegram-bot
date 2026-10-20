@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/config"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/money"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/setup"
 )
 
 const buyerID int64 = 910000001
@@ -93,10 +95,11 @@ func newTelegramFlow(t *testing.T, driver string) *telegramFlow {
 	}
 	s.admin("POST", "/payment-channels", s.login(), map[string]any{"name": "Isolated gateway", "provider_type": "epay", "channel_type": "alipay", "interaction_mode": "qr", "fee_rate": "2.50", "fixed_fee": "1.00", "is_active": true, "config_json": map[string]any{"gateway_url": "http://peer:8080", "epay_version": "v1", "merchant_id": "isolated", "merchant_key": secret, "notify_url": "http://upstream:8080/api/v1/payments/callback", "return_url": "https://payments.example.invalid/return"}}, &channel)
 	s.containers = append(s.containers, flow.bot)
+	sessionKey := randomHex(32)
 	s.docker("run", "-d", "--name", flow.bot, "--label", ownerLabel+"="+s.id, "--network", s.id, "--network-alias", "bot", "--entrypoint", "/usr/local/bin/dujiao-bot",
 		"-e", "DUJIAO_BASE_URL=http://upstream:8080", "-e", "DUJIAO_CHANNEL_KEY="+f.Key, "-e", "DUJIAO_CHANNEL_SECRET="+f.Secret,
 		"-e", "TELEGRAM_BOT_TOKEN=999001:isolated-e2e", "-e", "TELEGRAM_API_URL=http://peer:8080", "-e", "BOT_POLL_TIMEOUT=1s", "-e", "BOT_HTTP_LISTEN=:8444",
-		"-e", "BOT_REDIS_URL=redis://redis:6379/0", "-e", "BOT_SESSION_ENCRYPTION_KEY="+randomHex(32), "-e", "BOT_AUDIT_FILE=/tmp/audit.jsonl", image)
+		"-e", "BOT_REDIS_URL=redis://redis:6379/0", "-e", "BOT_SESSION_ENCRYPTION_KEY="+sessionKey, "-e", "BOT_AUDIT_FILE=/tmp/audit.jsonl", image)
 	botTunnel := s.tunnel(func() string { return flow.bot }, "8444")
 	t.Cleanup(botTunnel.Close)
 	flow.botURL = botTunnel.URL
@@ -107,6 +110,23 @@ func newTelegramFlow(t *testing.T, driver string) *telegramFlow {
 		}
 	})
 	flow.healthy()
+	// Check the final image's offline entry point using actual injected settings,
+	// without printing its JSON or any synthetic secrets into test/CI output.
+	diagnostic := s.docker("exec", flow.bot, "/usr/local/bin/dujiao-bot", "setup", "check")
+	var checked setup.Report
+	if json.Unmarshal([]byte(diagnostic), &checked) != nil || !checked.ConfigurationOK || checked.NetworkChecks != "not_run" || checked.Source != "process" {
+		t.Fatal("offline setup entry point failed in real Bot image")
+	}
+	expected := config.Config{DujiaoBaseURL: "http://upstream:8080", DujiaoChannelKey: f.Key}
+	if checked.SessionNamespace != expected.SessionPrefix() {
+		t.Fatal("setup/runtime namespace mismatch")
+	}
+	for _, private := range []string{f.Key, f.Secret, sessionKey, secret, "999001:isolated-e2e"} {
+		if strings.Contains(diagnostic, private) {
+			t.Fatal("setup diagnostic leaked a credential")
+		}
+	}
+	t.Log("offline setup check passed in real Bot image; values omitted, namespace stable")
 	flow.config, flow.paymentChannel, flow.gatewaySecret = f, channel.ID, secret
 	return flow
 }
@@ -385,8 +405,19 @@ func (f *telegramFlow) signed(config fixture, kind string, event callback.Event,
 		f.s.t.Fatal("callback transport failure")
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != want {
-		f.s.t.Fatalf("callback %s: got %d, expected %d", kind, resp.StatusCode, want)
+		_ = os.WriteFile(filepath.Join(f.s.dir, "callback-error.json"), responseBody, 0600)
+		var result struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(responseBody, &result)
+		reason := "unknown_response"
+		for _, known := range []string{"delivery_unavailable", "receipt_unavailable", "limiter_unavailable", "rate_limited", "notify_failed", "telegram_rate_limited"} {
+			if result.Status == known {
+				reason = known
+			}
+		}
+		f.s.t.Fatalf("callback %s: got %d, expected %d, reason=%s", kind, resp.StatusCode, want, reason)
 	}
 }

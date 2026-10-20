@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 config.yml
 data/
 dist/

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"github.com/dunea/dujiao-next-telegram-bot/internal/dujiao"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/operations"
 	"github.com/dunea/dujiao-next-telegram-bot/internal/session"
+	"github.com/dunea/dujiao-next-telegram-bot/internal/setup"
 	telegramapp "github.com/dunea/dujiao-next-telegram-bot/internal/telegram"
 )
 
@@ -33,6 +33,9 @@ func main() {
 
 // Version checks must work before loading credentials or making network calls.
 func command(args []string, output io.Writer) error {
+	if len(args) > 0 && args[0] == "setup" {
+		return setup.Run(args[1:], output, os.Getenv)
+	}
 	if len(args) == 0 {
 		return run()
 	}
@@ -40,7 +43,7 @@ func command(args []string, output io.Writer) error {
 		_, err := fmt.Fprintln(output, version)
 		return err
 	}
-	return errors.New("usage: dujiao-next-telegram-bot [--version]")
+	return errors.New("usage: dujiao-next-telegram-bot [--version | setup init | setup check]")
 }
 
 func run() error {
@@ -82,8 +85,7 @@ func run() error {
 	}
 	var sessions session.Store = session.NewMemory(defaultLocale)
 	if cfg.RedisURL != "" {
-		scope := sha256.Sum256([]byte(cfg.DujiaoBaseURL + "\x00" + cfg.DujiaoChannelKey))
-		sessions, err = session.NewRedis(cfg.RedisURL, fmt.Sprintf("dujiao-bot:v1:{%x}", scope[:16]), defaultLocale, cfg.SessionEncryptionKey)
+		sessions, err = session.NewRedis(cfg.RedisURL, cfg.SessionPrefix(), defaultLocale, cfg.SessionEncryptionKey)
 		if err != nil {
 			return fmt.Errorf("initialize Redis sessions: %w", err)
 		}

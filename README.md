@@ -48,6 +48,8 @@
 
 `make telegram-e2e` 还覆盖自动卡密分支；`make soak-test` 默认在两种数据库各运行五分钟持续负载，检查通知恢复、延迟、限流及资源预算。模型、门槛和边界见[持续压力与自动卡密验收](docs/soak-and-auto-delivery.md)，不代表商店支付 TPS 或真实 Telegram 发送能力。
 
+开发版已提供离线安装向导：`go run ./cmd/bot setup init` 创建新的私有配置，`go run ./cmd/bot setup check --env-file .env --profile compose-redis` 脱敏检查；已有配置不会被覆盖。升级比较、备份/回滚、故障排查及尚未执行的商家沙箱清单见 [v1.0 开发版运维指南](docs/operations-v1.md)。检查不联网、不迁移数据、不自动启动 Bot。
+
 ## 环境要求
 
 - Dujiao-Next `v1.5.0` 或兼容 Channel API 的版本

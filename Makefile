@@ -11,7 +11,7 @@ lint:
 	go vet ./...
 
 verify:
-	test -z "$$(gofmt -l cmd internal integration)"
+	test -z "$$(gofmt -l deployment.go cmd internal integration)"
 	go mod verify
 	go vet ./...
 	go vet -tags realdujiao ./integration/realdujiao
