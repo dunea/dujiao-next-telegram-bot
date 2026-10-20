@@ -24,6 +24,9 @@ import (
 type formFixture struct {
 	mu                   sync.Mutex
 	product              dujiao.ProductDetail
+	categories           []dujiao.Category
+	products             dujiao.ProductList
+	catalogQueries       []string
 	previews             []dujiao.OrderRequest
 	orders               []dujiao.OrderRequest
 	texts                []string
@@ -97,6 +100,15 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 		}
 		var data any
 		switch r.URL.Path {
+		case "/api/v1/channel/catalog/categories", "/api/v1/channel/catalog/products":
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			fixture.catalogQueries = append(fixture.catalogQueries, r.URL.RequestURI())
+			if r.URL.Path == "/api/v1/channel/catalog/categories" {
+				data = dujiao.CategoryList{Items: fixture.categories}
+			} else {
+				data = fixture.products
+			}
 		case "/api/v1/channel/wallet/recharge":
 			var request rechargeTestRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {

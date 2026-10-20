@@ -33,3 +33,25 @@ func assertCommerceKeyboard(t *testing.T, m tgMessage, primary string, required 
 		}
 	}
 }
+
+func assertQuantityKeyboard(t *testing.T, m tgMessage) {
+	t.Helper()
+	var keyboard struct {
+		Rows [][]supportButton `json:"inline_keyboard"`
+	}
+	if json.Unmarshal(m.Keyboard, &keyboard) != nil || len(keyboard.Rows) < 2 || len(keyboard.Rows[0]) != 1 || !strings.HasPrefix(keyboard.Rows[0][0].Data, "buy:") {
+		t.Fatal("quantity next step is not the full-width primary action")
+	}
+	for i, row := range keyboard.Rows {
+		if len(row) == 0 || len(row) > 3 {
+			t.Fatal("invalid quantity grid")
+		}
+		if len(row) == 3 {
+			for _, b := range row {
+				if !strings.HasPrefix(b.Data, "qty:") && !strings.HasPrefix(b.Data, "qtyinput:") && b.Data != "none" {
+					t.Fatal("non-numeric action crowded into quantity controls", i)
+				}
+			}
+		}
+	}
+}

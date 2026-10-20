@@ -77,10 +77,14 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	openProduct := func(id uint) tgMessage {
 		f.command("/products")
 		view := f.waitButton("cat:")
+		assertCommerceKeyboard(t, view, "", "cat:", "home")
 		f.click(view, button(view, fmt.Sprintf("cat:%d:", category.ID), ""))
 		view = f.waitButton("product:")
+		assertCommerceKeyboard(t, view, "", "product:", "cats", "home")
 		f.click(view, button(view, "product:", fmt.Sprint(id)))
-		return f.waitButton("qtyinput:")
+		view = f.waitButton("qtyinput:")
+		assertQuantityKeyboard(t, view)
+		return view
 	}
 	menu = openProduct(manual.ID)
 	f.click(menu, button(menu, "qtyinput:", ""))
@@ -94,15 +98,18 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	prompt = f.waitText("交付邮箱")
 	f.command("journey@example.invalid", prompt)
 	preview := f.waitButton("formconfirm:")
+	assertCommerceKeyboard(t, preview, "formconfirm:", "qtyedit:", "coupon:", "formedit:", "product:", "home")
 	staleConfirm := button(preview, "formconfirm:", "")
 	f.click(preview, button(preview, "coupon:", ":edit"))
 	prompt = f.waitText("输入优惠码")
 	f.command("JOURNEY-BAD", prompt)
 	bad := f.waitText("优惠码不可用")
+	assertCommerceKeyboard(t, bad, "coupon:", "coupon:", "formedit:", "product:", "home")
 	f.click(bad, button(bad, "coupon:", ":edit"))
 	prompt = f.waitText("输入优惠码")
 	f.command("JOURNEY1", prompt)
 	preview = f.waitButton("formconfirm:")
+	assertCommerceKeyboard(t, preview, "formconfirm:", "qtyedit:", "coupon:", "formedit:", "product:", "home")
 	if preview.ID <= f.inputID {
 		t.Fatal("coupon result is hidden in an earlier preview")
 	}

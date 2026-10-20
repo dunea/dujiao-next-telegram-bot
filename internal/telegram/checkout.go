@@ -165,12 +165,19 @@ func (a *App) showCheckoutError(ctx context.Context, draft *session.PurchaseDraf
 	} else {
 		a.logger.Warn("preview checkout failed", "error", err)
 	}
-	rows := couponButtons(locale, draft.ID, strconv.Itoa(draft.Revision), draft.CouponCode)
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "重新预览", "重新預覽", "Retry preview"), CallbackData: fmt.Sprintf("coupon:%s:%d:retry", draft.ID, draft.Revision)}})
-	if len(draft.Schema.Fields) > 0 {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: fmt.Sprintf("formedit:%s:%d", draft.ID, draft.Revision)}})
+	rows := [][]models.InlineKeyboardButton{{{Text: tr(locale, "重新预览", "重新預覽", "Retry preview"), CallbackData: fmt.Sprintf("coupon:%s:%d:retry", draft.ID, draft.Revision)}}}
+	var tools []models.InlineKeyboardButton
+	for _, row := range couponButtons(locale, draft.ID, strconv.Itoa(draft.Revision), draft.CouponCode) {
+		tools = append(tools, row...)
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", draft.ProductID)}})
+	if len(draft.Schema.Fields) > 0 {
+		tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: fmt.Sprintf("formedit:%s:%d", draft.ID, draft.Revision)})
+	}
+	rows = append(rows, compactActionRows(tools)...)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Product"), CallbackData: fmt.Sprintf("product:%d", draft.ProductID)},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.edit(ctx, draft.ChatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 

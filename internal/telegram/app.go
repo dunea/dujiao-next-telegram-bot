@@ -580,18 +580,19 @@ func (a *App) showCategories(ctx context.Context, chatID int64, user *models.Use
 		a.apiFailure(ctx, chatID, locale, "list categories", err)
 		return
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(categories)+2)
+	var choices []models.InlineKeyboardButton
 	for _, category := range categories {
 		label := category.Name
 		if category.ProductCount > 0 {
 			label += fmt.Sprintf(" (%d)", category.ProductCount)
 		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: fmt.Sprintf("cat:%d:1", category.ID)}})
+		choices = append(choices, models.InlineKeyboardButton{Text: label, CallbackData: fmt.Sprintf("cat:%d:1", category.ID)})
 	}
-	rows = append(rows,
-		[]models.InlineKeyboardButton{{Text: tr(locale, "全部商品", "全部商品", "All products"), CallbackData: "cat:0:1"}},
-		[]models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}},
-	)
+	rows := compactActionRows(choices)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "全部商品", "全部商品", "All products"), CallbackData: "cat:0:1"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	text := tr(locale, "请选择商品分类：", "請選擇商品分類：", "Choose a product category:")
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
@@ -606,14 +607,24 @@ func (a *App) showProducts(ctx context.Context, chatID, userID int64, categoryID
 		a.apiFailure(ctx, chatID, locale, "list products", err)
 		return
 	}
-	rows := make([][]models.InlineKeyboardButton, 0, len(products.Items)+2)
-	for _, product := range products.Items {
-		label := product.Title
-		if product.PriceFrom != "" {
-			label += " · " + product.PriceFrom + " " + product.Currency
+	text := "<b>" + tr(locale, "商品列表", "商品列表", "Products") + "</b>"
+	text += fmt.Sprintf("\n%s%d / %d", tr(locale, "页码：", "頁碼：", "Page: "), page, max(int64(1), products.TotalPage))
+	var choices []models.InlineKeyboardButton
+	for i, product := range products.Items {
+		text += fmt.Sprintf("\n\n<b>%d. %s</b>", i+1, html.EscapeString(truncate(product.Title, 120)))
+		price := product.PriceFrom
+		if product.MemberPriceFrom != "" {
+			price = product.MemberPriceFrom
 		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: fmt.Sprintf("product:%d", product.ID)}})
+		if price != "" {
+			text += "\n" + tr(locale, "价格：", "價格：", "Price: ") + html.EscapeString(price+" "+product.Currency)
+		}
+		if product.StockStatus == "out_of_stock" {
+			text += " · " + tr(locale, "已售罄", "已售罄", "Out of stock")
+		}
+		choices = append(choices, models.InlineKeyboardButton{Text: fmt.Sprintf("%d · %s", i+1, truncate(product.Title, 12)), CallbackData: fmt.Sprintf("product:%d", product.ID)})
 	}
+	rows := compactActionRows(choices)
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
 		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("cat:%d:%d", categoryID, page-1)})
@@ -624,8 +635,10 @@ func (a *App) showProducts(ctx context.Context, chatID, userID int64, categoryID
 	if len(pager) > 0 {
 		rows = append(rows, pager)
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 分类", "‹ 分類", "‹ Categories"), CallbackData: "cats"}})
-	text := tr(locale, "商品列表", "商品列表", "Products")
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 分类", "‹ 分類", "‹ Categories"), CallbackData: "cats"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	if len(products.Items) == 0 {
 		text = tr(locale, "这个分类暂时没有商品。", "這個分類暫時沒有商品。", "There are no products in this category yet.")
 	}
@@ -688,6 +701,8 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 			rows = append(rows, []models.InlineKeyboardButton{{Text: label, CallbackData: fmt.Sprintf("qty:%d:0:%d", product.ID, quantity)}})
 		}
 	} else {
+		var choices []models.InlineKeyboardButton
+		text += "\n\n" + tr(locale, "请选择规格：", "請選擇規格：", "Choose an option:")
 		for _, sku := range product.SKUs {
 			label := sku.SpecValues
 			if label == "" {
@@ -706,10 +721,14 @@ func (a *App) showProduct(ctx context.Context, chatID, userID int64, productID u
 			} else {
 				label += " · " + tr(locale, "库存不足", "庫存不足", "Unavailable")
 			}
-			rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: callback}})
+			choices = append(choices, models.InlineKeyboardButton{Text: truncate(label, 60), CallbackData: callback})
 		}
+		rows = append(rows, compactActionRows(choices)...)
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
@@ -819,23 +838,27 @@ func (a *App) renderOrderPreview(ctx context.Context, chatID int64, messageID in
 	}
 	text += "\n<b>" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(preview.TotalAmount+" "+preview.Currency) + "</b>"
 	text += formSummary
-	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
-		{{Text: tr(locale, "确认下单", "確認下單", "Place order"), CallbackData: confirmCallback}},
-		{{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Back to product"), CallbackData: fmt.Sprintf("product:%d", productID)}},
-	}}
-	if formSummary != "" {
-		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard[:1],
-			[]models.InlineKeyboardButton{{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: strings.Replace(confirmCallback, "formconfirm:", "formedit:", 1)}},
-			keyboard.InlineKeyboard[1],
-		)
-	}
+	text += "\n\n" + tr(locale, "确认后创建订单，不会自动扣款。", "確認後建立訂單，不會自動扣款。", "Confirmation creates an order; it does not charge you automatically.")
+	rows := [][]models.InlineKeyboardButton{{{Text: tr(locale, "确认下单", "確認下單", "Place order"), CallbackData: confirmCallback}}}
+	var tools []models.InlineKeyboardButton
 	parts := strings.Split(confirmCallback, ":")
 	if len(parts) == 3 {
-		rows := couponButtons(locale, parts[1], parts[2], request.CouponCode)
-		rows[0] = append(rows[0], models.InlineKeyboardButton{Text: tr(locale, "修改数量", "修改數量", "Edit quantity"), CallbackData: "qtyedit:" + parts[1] + ":" + parts[2]})
-		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard[:1], append(rows, keyboard.InlineKeyboard[1:]...)...)
+		tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "修改数量", "修改數量", "Edit quantity"), CallbackData: "qtyedit:" + parts[1] + ":" + parts[2]})
+		coupons := couponButtons(locale, parts[1], parts[2], request.CouponCode)
+		tools = append(tools, coupons[0][0])
+		if formSummary != "" {
+			tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "修改资料", "修改資料", "Edit details"), CallbackData: strings.Replace(confirmCallback, "formconfirm:", "formedit:", 1)})
+		}
+		if len(coupons) > 1 {
+			tools = append(tools, coupons[1][0])
+		}
 	}
-	a.edit(ctx, chatID, messageID, text, keyboard)
+	rows = append(rows, compactActionRows(tools)...)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回商品", "‹ 返回商品", "‹ Product"), CallbackData: fmt.Sprintf("product:%d", productID)},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
+	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 	return preview, nil
 }
 

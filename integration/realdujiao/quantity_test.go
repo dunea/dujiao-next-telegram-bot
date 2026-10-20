@@ -21,10 +21,13 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	f.waitText("欢迎")
 	f.command("/products")
 	menu := f.waitButton("cat:")
+	assertCommerceKeyboard(t, menu, "", "cat:", "home")
 	f.click(menu, button(menu, fmt.Sprintf("cat:%d:", category.ID), ""))
 	menu = f.waitButton("product:")
+	assertCommerceKeyboard(t, menu, "", "product:", "cats", "home")
 	f.click(menu, button(menu, "product:", fmt.Sprint(product.ID)))
 	menu = f.waitButton("qtyinput:")
+	assertQuantityKeyboard(t, menu)
 	if button(menu, "buy:", ":1") == "" {
 		t.Fatal("single SKU required an extra option-selection screen")
 	}
@@ -37,6 +40,7 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	}
 	f.command("2500")
 	menu = f.waitButton("buy:")
+	assertQuantityKeyboard(t, menu)
 	if menu.Method != "sendMessage" || menu.ID <= f.inputID {
 		t.Fatal("typed quantity next step is hidden above user input")
 	}
@@ -45,6 +49,7 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	}
 	f.click(menu, button(menu, "buy:", ":2500"))
 	menu = f.waitButton("formconfirm:")
+	assertCommerceKeyboard(t, menu, "formconfirm:", "qtyedit:", "coupon:", "product:", "home")
 	c := s.channel(f.config, false)
 	orders, err := c.Orders(context.Background(), strconv.FormatInt(buyerID, 10), "zh-CN", "", 1, 20)
 	if err != nil || orders.Total != 0 {
@@ -55,6 +60,7 @@ func TestTelegramBulkQuantity(t *testing.T) {
 	f.waitText("请输入购买数量")
 	f.command("5000")
 	menu = f.waitButton("formconfirm:")
+	assertCommerceKeyboard(t, menu, "formconfirm:", "qtyedit:", "coupon:", "product:", "home")
 	if menu.ID <= f.inputID {
 		t.Fatal("edited quantity preview is hidden above user input")
 	}

@@ -79,24 +79,28 @@ func quantityCard(locale string, product dujiao.ProductDetail, skuID uint, quant
 		if maximum > 0 || minimum > 1 {
 			text += "\n" + quantityRange(locale, minimum, maximum)
 		}
-		minus, plus := "none", "none"
-		if quantity > minimum {
-			minus = fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, quantity-1)
-		}
-		if quantity < maxPurchaseQuantity && (maximum == 0 || quantity < maximum) {
-			plus = fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, quantity+1)
-		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: "−", CallbackData: minus}, {Text: tr(locale, "✎ 输入数量", "✎ 輸入數量", "✎ Enter quantity"), CallbackData: "qtyinput:" + id}, {Text: "+", CallbackData: plus}})
-		var presets []models.InlineKeyboardButton
-		for _, n := range []int{10, 100, 1000} {
-			if n >= minimum && (maximum == 0 || n <= maximum) && n != quantity {
-				presets = append(presets, models.InlineKeyboardButton{Text: fmt.Sprintf("%d%s", n, tr(locale, "件", "件", " items")), CallbackData: fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, n)})
+		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("%s · %d%s", tr(locale, "下一步", "下一步", "Continue"), quantity, tr(locale, "件", "件", " items")), CallbackData: fmt.Sprintf("buy:%d:%d:%d", product.ID, skuID, quantity)}})
+		// A fixed quantity needs no stepper or input prompt. Numeric controls
+		// deliberately stay in three columns; other actions use the shared grid.
+		if maximum != minimum {
+			minus, plus := "none", "none"
+			if quantity > minimum {
+				minus = fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, quantity-1)
+			}
+			if quantity < maxPurchaseQuantity && (maximum == 0 || quantity < maximum) {
+				plus = fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, quantity+1)
+			}
+			rows = append(rows, []models.InlineKeyboardButton{{Text: "−", CallbackData: minus}, {Text: tr(locale, "✎ 输入数量", "✎ 輸入數量", "✎ Enter quantity"), CallbackData: "qtyinput:" + id}, {Text: "+", CallbackData: plus}})
+			var presets []models.InlineKeyboardButton
+			for _, n := range []int{10, 100, 1000} {
+				if n >= minimum && (maximum == 0 || n <= maximum) && n != quantity {
+					presets = append(presets, models.InlineKeyboardButton{Text: fmt.Sprintf("%d%s", n, tr(locale, "件", "件", " items")), CallbackData: fmt.Sprintf("qty:%d:%d:%d", product.ID, skuID, n)})
+				}
+			}
+			if len(presets) > 0 {
+				rows = append(rows, presets)
 			}
 		}
-		if len(presets) > 0 {
-			rows = append(rows, presets)
-		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "下一步", "下一步", "Continue"), CallbackData: fmt.Sprintf("buy:%d:%d:%d", product.ID, skuID, quantity)}})
 	} else {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "已售罄", "已售罄", "Out of stock"), CallbackData: "noop"}})
 	}
@@ -108,7 +112,13 @@ func quantityCard(locale string, product dujiao.ProductDetail, skuID uint, quant
 	if product.Description != "" || len([]rune(product.Summary)) > 300 {
 		secondary = append([]models.InlineKeyboardButton{{Text: tr(locale, "商品详情", "商品詳情", "Product details"), CallbackData: fmt.Sprintf("productinfo:%d:%d:%d", product.ID, skuID, quantity)}}, secondary...)
 	}
-	return text, models.InlineKeyboardMarkup{InlineKeyboard: append(rows, secondary)}
+	if len(product.SKUs) > 1 {
+		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"})
+	}
+	if len(secondary)%2 != 0 {
+		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"})
+	}
+	return text, models.InlineKeyboardMarkup{InlineKeyboard: append(rows, compactActionRows(secondary)...)}
 }
 
 func (a *App) showProductInfo(ctx context.Context, chatID int64, messageID int, userID int64, productID, skuID uint, quantity int) {
@@ -123,7 +133,10 @@ func (a *App) showProductInfo(ctx context.Context, chatID int64, messageID int, 
 		description = product.Summary
 	}
 	text := "<b>" + html.EscapeString(product.Title) + "</b>\n\n" + html.EscapeString(truncate(description, 2500))
-	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回数量选择", "‹ 返回數量選擇", "‹ Back to quantity"), CallbackData: fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity)}}}})
+	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: tr(locale, "‹ 返回数量选择", "‹ 返回數量選擇", "‹ Quantity"), CallbackData: fmt.Sprintf("qty:%d:%d:%d", productID, skuID, quantity)},
+		{Text: tr(locale, "‹ 商品列表", "‹ 商品列表", "‹ Products"), CallbackData: "cat:0:1"},
+	}}})
 }
 
 func (a *App) publishQuantitySelector(ctx context.Context, chatID int64, messageID int, userID int64, product dujiao.ProductDetail, skuID uint, quantity int, edit bool) {
