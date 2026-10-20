@@ -247,13 +247,14 @@ func (a *App) showRechargeChannels(ctx context.Context, userID int64, draft *ses
 	locale := a.sessions.Get(userID).Locale
 	text := tr(locale, "充值到账金额：", "儲值入帳金額：", "Wallet credit: ") + "<b>" + html.EscapeString(draft.Amount+" "+draft.Currency) + "</b>\n\n"
 	text += tr(locale, "请选择支付渠道（点击后创建充值单）：", "請選擇付款管道（點擊後建立儲值單）：", "Choose a channel to create the recharge:")
-	rows := make([][]models.InlineKeyboardButton, 0, 7)
+	var choices []models.InlineKeyboardButton
 	start, end := draft.Page*rechargeChannelPageSize, min((draft.Page+1)*rechargeChannelPageSize, len(draft.Channels))
 	for _, channel := range draft.Channels[start:end] {
 		name := truncate(channel.Name, 40)
 		text += "\n\n<b>" + html.EscapeString(name) + "</b>\n" + rechargeFeeRule(locale, draft.Amount, draft.Currency, channel)
-		rows = append(rows, []models.InlineKeyboardButton{{Text: name, CallbackData: fmt.Sprintf("rechargepay:%s:%d", draft.ID, channel.ID)}})
+		choices = append(choices, models.InlineKeyboardButton{Text: name, CallbackData: fmt.Sprintf("rechargepay:%s:%d", draft.ID, channel.ID)})
 	}
+	rows := compactActionRows(choices)
 	var pager []models.InlineKeyboardButton
 	if draft.Page > 0 {
 		pager = append(pager, models.InlineKeyboardButton{Text: "‹", CallbackData: fmt.Sprintf("rechargepage:%s:%d", draft.ID, draft.Page-1)})
@@ -305,5 +306,9 @@ func rechargeReceipt(locale, amount, currency string, result dujiao.WalletRechar
 func rechargeResultKeyboard(locale string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "查看余额", "查看餘額", "View balance"), CallbackData: "wallet"}, {Text: tr(locale, "交易流水", "交易明細", "Transactions"), CallbackData: "walletlog:1"}},
+		{
+			{Text: tr(locale, "🛍 购买商品", "🛍 購買商品", "🛍 Shop"), CallbackData: "cats"},
+			{Text: tr(locale, "📦 我的订单", "📦 我的訂單", "📦 Orders"), CallbackData: "orders:a:1"},
+		},
 	}}
 }

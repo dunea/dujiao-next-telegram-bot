@@ -61,8 +61,10 @@ func orderListStatus(locale string, o dujiao.OrderListItem) string {
 func pendingBack(locale string, oid uint) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "核对支付 / 继续支付", "核對付款 / 繼續付款", "Check / continue payment"), CallbackData: fmt.Sprintf("resume:%d", oid)}},
-		{{Text: tr(locale, "刷新订单", "重新整理訂單", "Refresh order"), CallbackData: fmt.Sprintf("order:%d", oid)}},
-		{{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:p:1"}},
+		{
+			{Text: tr(locale, "刷新订单", "重新整理訂單", "Refresh order"), CallbackData: fmt.Sprintf("order:%d", oid)},
+			{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:p:1"},
+		},
 	}}
 }
 func (a *App) pendingFailure(ctx context.Context, uid int64, mid int, oid uint) {
@@ -241,13 +243,17 @@ func (a *App) presentPaymentMethods(ctx context.Context, chatID int64, mid int, 
 	button := func(name string, ch uint, balance string) models.InlineKeyboardButton {
 		return models.InlineKeyboardButton{Text: truncate(name, 60), CallbackData: "pay:" + strconv.FormatUint(uint64(o.OrderID), 36) + ":" + nonce + ":" + strconv.FormatUint(uint64(ch), 36) + ":" + balance}
 	}
-	rows := [][]models.InlineKeyboardButton{{button(tr(locale, "余额支付", "餘額付款", "Pay with balance"), 0, "1")}}
+	choices := []models.InlineKeyboardButton{button(tr(locale, "余额支付", "餘額付款", "Pay with balance"), 0, "1")}
 	if !channels.WalletOnlyPayment {
 		for _, ch := range channels.Items {
-			rows = append(rows, []models.InlineKeyboardButton{button(ch.Name, ch.ID, "0")})
+			choices = append(choices, button(ch.Name, ch.ID, "0"))
 		}
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", o.OrderID)}})
+	rows := compactActionRows(choices)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Order"), CallbackData: fmt.Sprintf("order:%d", o.OrderID)},
+		{Text: tr(locale, "查看钱包", "查看錢包", "Wallet"), CallbackData: "wallet"},
+	})
 	text := "<b>" + tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method") + "</b>\n\n" + tr(locale, "订单号：", "訂單號：", "Order: ") + html.EscapeString(truncate(o.OrderNo, 100)) + "\n" + tr(locale, "应付：", "應付：", "Total: ") + html.EscapeString(o.TotalAmount+" "+o.Currency) + "\n" + pendingDeadline(locale, o.ExpiresAt, now)
 	text += "\n\n" + tr(locale, "⏳ 当前状态：待支付。请在下方选择支付方式。\n付款成功后才会安排交付；如已付款，请先刷新核对，勿重复支付。", "⏳ 目前狀態：待付款。請在下方選擇付款方式。\n付款成功後才會安排交付；如已付款，請先重新整理核對，勿重複付款。", "⏳ Status: awaiting payment. Choose a method below.\nDelivery starts after payment. If already paid, refresh first; do not pay twice.")
 	if previousPayment {
@@ -288,7 +294,13 @@ func (a *App) createSelectedPayment(ctx context.Context, uid int64, mid int, oid
 			return
 		}
 		if have < need {
-			a.pendingEdit(ctx, uid, mid, tr(locale, "余额不足，未发起扣款。可选择其他支付方式。", "餘額不足，未發起扣款。可選擇其他付款方式。", "Insufficient balance. No charge requested. Choose another method."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "选择支付方式", "選擇付款方式", "Choose payment method"), CallbackData: fmt.Sprintf("resume:%d", oid)}}}})
+			a.pendingEdit(ctx, uid, mid, tr(locale, "余额不足，未发起扣款。可充值后返回此订单，或选择其他支付方式。", "餘額不足，未發起扣款。可儲值後返回此訂單，或選擇其他付款方式。", "Insufficient balance. No charge requested. Recharge and return to this order, or choose another method."), models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
+				{
+					{Text: tr(locale, "➕ 去充值", "➕ 去儲值", "➕ Recharge"), CallbackData: "recharge"},
+					{Text: tr(locale, "其他支付方式", "其他付款方式", "Other methods"), CallbackData: fmt.Sprintf("resume:%d", oid)},
+				},
+				{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Order"), CallbackData: fmt.Sprintf("order:%d", oid)}},
+			}})
 			return
 		}
 	}
@@ -372,7 +384,7 @@ func (a *App) presentExistingPayment(ctx context.Context, uid int64, mid int, o 
 		a.pendingFailure(ctx, uid, mid, o.OrderID)
 		return
 	}
-	text := "<b>" + tr(locale, "继续支付", "繼續付款", "Continue payment") + "</b>\n\n" + html.EscapeString(truncate(o.OrderNo, 100)) + "\n" + tr(locale, "实付：", "實付：", "Pay: ") + html.EscapeString(p.Amount+" "+p.Currency)
+	text := "<b>" + tr(locale, "继续支付", "繼續付款", "Continue payment") + "</b>\n\n" + html.EscapeString(truncate(o.OrderNo, 100)) + "\n" + tr(locale, "应付：", "應付：", "Pay: ") + html.EscapeString(p.Amount+" "+p.Currency)
 	text += "\n" + pendingDeadline(locale, o.ExpiresAt, time.Now())
 	if p.ExpiresAt != "" {
 		text += "\n" + tr(locale, "支付链接截止：", "付款連結截止：", "Payment link expires: ") + html.EscapeString(truncate(p.ExpiresAt, 60))
@@ -385,14 +397,28 @@ func (a *App) presentExistingPayment(ctx context.Context, uid int64, mid int, o 
 	}
 	text += "\n\n" + tr(locale, "正在使用原支付记录。已付款请刷新核对，勿重复转账。", "正在使用原付款紀錄。已付款請重新整理核對，勿重複轉帳。", "Using the existing payment. If paid, refresh; do not pay twice.")
 	rows := [][]models.InlineKeyboardButton{}
+	var secondary []models.InlineKeyboardButton
 	if strings.HasPrefix(p.PayURL, "https://") || strings.HasPrefix(p.PayURL, "http://") {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "前往支付", "前往付款", "Pay now"), URL: p.PayURL}})
 	}
 	if p.QRCode != "" || p.PayURL != "" {
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "显示二维码", "顯示 QR 碼", "Show QR code"), CallbackData: fmt.Sprintf("payqr:%d:%d", o.OrderID, p.PaymentID)}})
+		qr := models.InlineKeyboardButton{Text: tr(locale, "显示二维码", "顯示 QR 碼", "Show QR code"), CallbackData: fmt.Sprintf("payqr:%d:%d", o.OrderID, p.PaymentID)}
+		if len(rows) == 0 {
+			rows = append(rows, []models.InlineKeyboardButton{qr})
+		} else {
+			secondary = append(secondary, qr)
+		}
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: fmt.Sprintf("resume:%d", o.OrderID)}, {Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", o.OrderID)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:p:1"}})
+	secondary = append(secondary,
+		models.InlineKeyboardButton{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: fmt.Sprintf("resume:%d", o.OrderID)},
+		models.InlineKeyboardButton{Text: tr(locale, "订单详情", "訂單詳情", "Order details"), CallbackData: fmt.Sprintf("order:%d", o.OrderID)},
+		models.InlineKeyboardButton{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", o.OrderID)},
+	)
+	rows = append(rows, compactActionRows(secondary)...)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 我的订单", "‹ 我的訂單", "‹ My orders"), CallbackData: "orders:p:1"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.pendingEdit(ctx, uid, mid, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 	qr := 0
 	a.pollMu.Lock()

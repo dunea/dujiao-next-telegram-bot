@@ -1040,16 +1040,29 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 	rows := make([][]models.InlineKeyboardButton, 0, len(orders.Items)+3)
 	rows = append(rows, []models.InlineKeyboardButton{
 		{Text: tr(locale, "🔎 订单号查找", "🔎 訂單號查找", "🔎 Find order"), CallbackData: fmt.Sprintf("orderfind:%s:%d", filterCode, page)},
-		{Text: tr(locale, "筛选：", "篩選：", "Filter: ") + orderFilterLabel(locale, filterCode), CallbackData: fmt.Sprintf("orderfilters:%s:%d", filterCode, page)},
+		{Text: tr(locale, "状态筛选", "狀態篩選", "Filter status"), CallbackData: fmt.Sprintf("orderfilters:%s:%d", filterCode, page)},
 	})
-	for index, order := range orders.Items {
-		label := order.ProductTitle
-		if label == "" {
-			label = order.OrderNo
-		}
-		label += " · " + orderListStatus(locale, order)
-		rows = append(rows, []models.InlineKeyboardButton{{Text: fmt.Sprintf("%d · %s", index+1, truncate(label, 50)), CallbackData: orderViewCallback(order.OrderID, filterCode, page)}})
+	quickFilters := []models.InlineKeyboardButton{
+		{Text: tr(locale, "全部订单", "全部訂單", "All orders"), CallbackData: "orders:a:1"},
+		{Text: tr(locale, "待支付", "待付款", "Unpaid"), CallbackData: "orders:p:1"},
 	}
+	if filterCode == "a" {
+		quickFilters[0].Text = "✓ " + quickFilters[0].Text
+	}
+	if filterCode == "p" {
+		quickFilters[1].Text = "✓ " + quickFilters[1].Text
+	}
+	rows = append(rows, quickFilters)
+	var choices []models.InlineKeyboardButton
+	for index, order := range orders.Items {
+		label := fmt.Sprintf("%d · %s", index+1, orderListStatus(locale, order))
+		if len([]rune(label)) > 18 {
+			// The numbered body above retains the full status and order number.
+			label = fmt.Sprintf(tr(locale, "查看订单 %d", "查看訂單 %d", "View order %d"), index+1)
+		}
+		choices = append(choices, models.InlineKeyboardButton{Text: label, CallbackData: orderViewCallback(order.OrderID, filterCode, page)})
+	}
+	rows = append(rows, compactActionRows(choices)...)
 	var pager []models.InlineKeyboardButton
 	if page > 1 {
 		pager = append(pager, models.InlineKeyboardButton{Text: tr(locale, "‹ 上一页", "‹ 上一頁", "‹ Previous"), CallbackData: fmt.Sprintf("orders:%s:%d", filterCode, page-1)})
@@ -1060,7 +1073,7 @@ func (a *App) showOrders(ctx context.Context, chatID, userID int64, status strin
 	if len(pager) > 0 {
 		rows = append(rows, pager)
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}})
+	rows = append(rows, shopHomeButtons(locale))
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
@@ -1123,11 +1136,27 @@ func (a *App) renderOrder(ctx context.Context, chatID int64, messageID int, loca
 		if !paymentExpired(order.ExpiresAt, time.Now()) {
 			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "继续支付", "繼續付款", "Continue payment"), CallbackData: fmt.Sprintf("resume:%d", order.OrderID)}})
 		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)}})
 	}
-	rows = append(rows, a.orderSupportButtons(locale, order, code, page))
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: orderViewCallback(order.OrderID, code, page)}})
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单列表", "‹ 返回訂單列表", "‹ Back to orders"), CallbackData: fmt.Sprintf("orders:%s:%d", code, page)}})
+	secondary := []models.InlineKeyboardButton{{Text: tr(locale, "刷新状态", "重新整理狀態", "Refresh status"), CallbackData: orderViewCallback(order.OrderID, code, page)}}
+	support := a.orderSupportButtons(locale, order, code, page)
+	for _, button := range support {
+		if button.URL == "" {
+			secondary = append(secondary, button)
+		}
+	}
+	for _, button := range support {
+		if button.URL != "" {
+			secondary = append(secondary, button)
+		}
+	}
+	if order.Status == "pending_payment" {
+		secondary = append(secondary, models.InlineKeyboardButton{Text: tr(locale, "取消订单", "取消訂單", "Cancel order"), CallbackData: fmt.Sprintf("cancelask:%d", order.OrderID)})
+	}
+	rows = append(rows, compactActionRows(secondary)...)
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回订单列表", "‹ 返回訂單列表", "‹ Orders"), CallbackData: fmt.Sprintf("orders:%s:%d", code, page)},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, messageID > 0)
 }
 
@@ -1142,9 +1171,11 @@ func (a *App) showWallet(ctx context.Context, chatID, userID int64, edit bool, m
 	text += html.EscapeString(wallet.Balance + " " + wallet.Currency)
 	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "➕ 充值", "➕ 儲值", "➕ Recharge"), CallbackData: "recharge"}},
-		{{Text: tr(locale, "🎁 礼品卡兑换", "🎁 禮品卡兌換", "🎁 Redeem gift card"), CallbackData: "giftcard"}},
-		{{Text: tr(locale, "📒 交易流水", "📒 交易明細", "📒 Transactions"), CallbackData: "walletlog:1"}},
-		{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "home"}},
+		{
+			{Text: tr(locale, "📒 交易流水", "📒 交易明細", "📒 Transactions"), CallbackData: "walletlog:1"},
+			{Text: tr(locale, "🎁 礼品卡兑换", "🎁 禮品卡兌換", "🎁 Redeem card"), CallbackData: "giftcard"},
+		},
+		shopHomeButtons(locale),
 	}}
 	a.sendOrEdit(ctx, chatID, messageID, text, keyboard, edit)
 }
@@ -1186,7 +1217,10 @@ func (a *App) showWalletTransactions(ctx context.Context, chatID, userID int64, 
 	if len(pager) > 0 {
 		rows = append(rows, pager)
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Wallet"), CallbackData: "wallet"},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.sendOrEdit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows}, edit)
 }
 
@@ -1218,7 +1252,10 @@ func (a *App) createWalletRecharge(ctx context.Context, chatID int64, messageID 
 	if safeHTTPURL(result.Payment.PayURL) {
 		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "前往支付", "前往付款", "Pay now"), URL: result.Payment.PayURL}})
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回钱包", "‹ 返回錢包", "‹ Back to wallet"), CallbackData: "wallet"}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "查看余额", "查看餘額", "View balance"), CallbackData: "wallet"},
+		{Text: tr(locale, "交易流水", "交易明細", "Transactions"), CallbackData: "walletlog:1"},
+	})
 	a.edit(ctx, chatID, messageID, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 	a.sendPaymentQRCode(ctx, chatID, locale, result.Payment.QRCode, result.Payment.PayURL, result.Payment.InteractionMode, result.Payment.Amount, result.Payment.Currency)
 }
@@ -1304,27 +1341,7 @@ func (a *App) homeKeyboard(locale string) models.InlineKeyboardMarkup {
 // Keep shopping prominent, pair short secondary actions, and avoid squeezing
 // merchant-defined long labels. Merchant labels, actions and relative order stay intact.
 func compactHomeMenuRows(buttons []models.InlineKeyboardButton) [][]models.InlineKeyboardButton {
-	var rows [][]models.InlineKeyboardButton
-	var pair []models.InlineKeyboardButton
-	flush := func() {
-		if len(pair) > 0 {
-			rows = append(rows, pair)
-			pair = nil
-		}
-	}
-	for _, button := range buttons {
-		if button.CallbackData == "cats" || len([]rune(button.Text)) > 18 {
-			flush()
-			rows = append(rows, []models.InlineKeyboardButton{button})
-			continue
-		}
-		pair = append(pair, button)
-		if len(pair) == 2 {
-			flush()
-		}
-	}
-	flush()
-	return rows
+	return compactActionRows(buttons, "cats")
 }
 
 func configuredMenuRows(items []dujiao.BotMenuItem, locale string) [][]models.InlineKeyboardButton {

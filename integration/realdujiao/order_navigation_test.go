@@ -35,14 +35,23 @@ func TestTelegramOrderNavigation(t *testing.T) {
 	}
 	f.command("/orders")
 	menu := f.waitButton("orderfind:a:1")
+	assertCommerceKeyboard(t, menu, "", "orderfind:", "orderfilters:", "orders:a:1", "orders:p:1", "cats", "home")
 	if !strings.Contains(menu.Text, "1/2") || !strings.Contains(menu.Text, "共 7 单") {
 		t.Fatal("list missing count/page")
 	}
+	f.click(menu, button(menu, "orders:p:1", ""))
+	menu = f.waitButton("orderfind:p:1")
+	if !strings.Contains(menu.Text, "共 1 单") {
+		t.Fatal("one-tap pending filter incorrect")
+	}
+	f.click(menu, button(menu, "orders:a:1", ""))
+	menu = f.waitButton("orderfind:a:1")
 	f.click(menu, button(menu, "orders:a:2", ""))
 	menu = f.waitButton("orderfind:a:2")
 	viewData := button(menu, "order:", ":a:2")
 	f.click(menu, viewData)
 	view := f.waitButton(viewData)
+	assertCommerceKeyboard(t, view, "", "order:", "support:", "orders:a:2", "home")
 	if !strings.Contains(view.Text, "付款：") || !strings.Contains(view.Text, "交付：") {
 		t.Fatal("detail did not separate payment/delivery")
 	}

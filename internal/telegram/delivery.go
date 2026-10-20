@@ -259,6 +259,9 @@ func (a *App) showDeliveryReceipt(ctx context.Context, uid int64, mid int, local
 	} else {
 		text += "\n" + tr(locale, "如需重发，请稍后点击下载，再次确认。", "如需重發，請稍後點擊下載，再次確認。", "To resend, wait and tap Download again, then confirm.")
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Back to order"), CallbackData: fmt.Sprintf("order:%d", oid)}})
+	rows = append(rows, []models.InlineKeyboardButton{
+		{Text: tr(locale, "‹ 返回订单", "‹ 返回訂單", "‹ Order"), CallbackData: fmt.Sprintf("order:%d", oid)},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	})
 	a.edit(ctx, uid, mid, text, models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }

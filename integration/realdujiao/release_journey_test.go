@@ -55,7 +55,10 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	if !hasPair || !hasShop {
 		t.Fatal("home layout is not compact or lost shopping")
 	}
-	f.command("/recharge")
+	f.command("/wallet")
+	wallet := f.waitText("账户余额")
+	assertCommerceKeyboard(t, wallet, "recharge", "walletlog:1", "giftcard", "cats", "home")
+	f.click(wallet, button(wallet, "recharge", ""))
 	menu := f.waitButton("rechargepick:")
 	f.command("100")
 	menu = f.waitButton("rechargepay:")
@@ -115,6 +118,7 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	}
 	f.click(preview, button(preview, "formconfirm:", ""))
 	selection := f.waitButton("pay:")
+	assertCommerceKeyboard(t, selection, "", "pay:", "order:", "wallet")
 	walletPay := button(selection, "pay:", ":1")
 	f.click(selection, walletPay)
 	f.waitText("订单详情")
@@ -158,8 +162,10 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	preview = f.waitButton("formconfirm:")
 	f.click(preview, button(preview, "formconfirm:", ""))
 	selection = f.waitButton("pay:")
+	assertCommerceKeyboard(t, selection, "", "pay:", "order:", "wallet")
 	f.click(selection, button(selection, "pay:", ":"+strconv.FormatUint(uint64(f.paymentChannel), 36)+":0"))
 	card := f.waitButton("payqr:")
+	assertCommerceKeyboard(t, card, "url", "payqr:", "resume:", "order:", "cancelask:", "orders:", "home")
 	originalLink := paymentLink(card)
 	f.click(card, button(card, "resume:", ""))
 	card = f.waitButton("payqr:")

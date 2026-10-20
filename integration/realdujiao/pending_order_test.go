@@ -72,6 +72,14 @@ func TestTelegramPendingOrder(t *testing.T) {
 	if !errors.As(e, &denied) || denied.HTTPStatus != 404 || denied.ErrorCode != "order_not_found" {
 		t.Fatal("latest payment isolation failed")
 	}
+	assertCommerceKeyboard(t, card, "url", "payqr:", "resume:", "order:", "cancelask:", "orders:", "home")
+	f.click(card, button(card, fmt.Sprintf("order:%d", oid), ""))
+	detailView := f.waitButton("resume:")
+	f.click(detailView, button(detailView, "resume:", ""))
+	card = f.waitButton("payqr:")
+	if paymentLink(card) != originalLink || len(f.state().Payments) != 1 {
+		t.Fatal("direct detail shortcut lost the original invoice")
+	}
 	// Repeat the old selection and resume after restart: the original provider
 	// record and URL must be reused; never generate another invoice or order.
 	f.click(selection, pay)
