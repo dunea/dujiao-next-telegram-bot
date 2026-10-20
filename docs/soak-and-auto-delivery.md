@@ -5,7 +5,7 @@
 ## 执行
 
 ```bash
-make telegram-e2e                      # 人工交付 + 自动卡密，两种数据库
+make telegram-e2e                      # 人工交付 + 自动卡密 + 连续重启，两种数据库
 make soak-test                         # SQLite、PostgreSQL 各持续 5 分钟，再收尾核验
 DUJIAO_REAL_DB=postgres make soak-test
 DUJIAO_SOAK_DURATION=15m make soak-test # 每种数据库独立 15 分钟
@@ -56,7 +56,7 @@ CI 的两种数据库任务依次执行三个版本升级链、人工/自动交�
 
 RSS 与线程从本次 Bot 的 `/proc/1/status` 读取，Redis 从本次实例 `INFO memory` 读取；缺失指标必须失败。预算是当前测试规模下的回归门槛，不是生产容量建议，也不证明没有内存泄漏。当前没有测最大承载、生产数据库支付 TPS、CPU 预算、全天稳定性或回执 10000 容量满时的实栈吞吐；回执容量边界另有离线回归。Telegram 已接收但响应丢失时仍可能重复通知的边界保持不变。
 
-`delivery_unavailable` 的现有协议不能区分竞争/租约未决与领取存储失败，因此单列为有严格次数上限的临时重试，不能计为成功或正常限流；最终还必须逐个资源补投确认并检查业务/资源状态。明确标识的存储故障和未知响应直接失败。
+开发版已拆分原先含糊的 `delivery_unavailable`：只有明确的 `delivery_busy`（已读取到未决租约/冷却）可进入有严格次数上限的临时重试，不能计为成功或正常限流；最终还必须逐个资源补投确认并检查业务/资源状态。所有 `receipt_unavailable`（包括读取/写入故障、CAS 冲突）、旧含糊状态和未知响应直接失败。阶段和日志原因见[重启回调诊断](callbacks-and-e2e.md#重启回调专项与脱敏诊断)。
 
 清理沿用随机 owner 标签核验，只移除本次容器/网络/镜像和成功测试的 PostgreSQL 卷；失败数据及私有日志保留在输出中的临时目录，不操作演示或已有数据卷。
 

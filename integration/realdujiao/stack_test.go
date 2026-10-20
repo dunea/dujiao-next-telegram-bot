@@ -192,13 +192,25 @@ func (s *stack) tunnel(target func() string, port string) *httptest.Server {
 		// Read the HTTP response as a stream, not via Cmd.Output: waiting for
 		// netcat's idle timeout after the response can manufacture client timeouts.
 		cmd := exec.CommandContext(r.Context(), "docker", "exec", "-i", target(), "nc", "-w", "15", "127.0.0.1", port)
-		cmd.Stdin = bytes.NewReader(request.Bytes())
+		// Keep stdin open until the response is read. Sending EOF immediately
+		// makes BusyBox nc half-close TCP; Go then cancels the backend request
+		// context even though the peer can still read the response.
+		input, err := cmd.StdinPipe()
+		if err != nil {
+			http.Error(w, "isolated backend not ready", 502)
+			return
+		}
+		defer input.Close()
 		out, err := cmd.StdoutPipe()
 		if err != nil || cmd.Start() != nil {
 			http.Error(w, "isolated backend not ready", 502)
 			return
 		}
 		defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+		if _, err := input.Write(request.Bytes()); err != nil {
+			http.Error(w, "isolated request failed", 502)
+			return
+		}
 		response, err := http.ReadResponse(bufio.NewReader(out), r)
 		if err != nil {
 			http.Error(w, "invalid backend response", 502)

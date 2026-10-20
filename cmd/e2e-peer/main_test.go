@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func peerRequest(p *peer, path string, values url.Values) *httptest.ResponseRecorder {
@@ -15,6 +19,43 @@ func peerRequest(p *peer, path string, values url.Values) *httptest.ResponseReco
 	w := httptest.NewRecorder()
 	p.ServeHTTP(w, r)
 	return w
+}
+
+func TestRequestContextProbeDistinguishesTCPHalfClose(t *testing.T) {
+	p := &peer{}
+	server := httptest.NewServer(p)
+	defer server.Close()
+	conn, err := net.DialTimeout("tcp", strings.TrimPrefix(server.URL, "http://"), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	_, err = io.WriteString(conn, "GET /test/request-context HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+	if err != nil || conn.(*net.TCPConn).CloseWrite() != nil {
+		t.Fatal("cannot send half-closed request")
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var half struct{ Canceled bool }
+	if json.NewDecoder(response.Body).Decode(&half) != nil || !half.Canceled {
+		t.Fatal("half-close did not cancel the request context")
+	}
+	normal, err := server.Client().Get(server.URL + "/test/request-context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer normal.Body.Close()
+	var whole struct{ Canceled bool }
+	if json.NewDecoder(normal.Body).Decode(&whole) != nil || whole.Canceled {
+		t.Fatal("normal request context was canceled")
+	}
+	if len(p.messages) != 0 || len(p.payments) != 0 {
+		t.Fatal("transport probe mutated business state")
+	}
 }
 func TestPeerRealSDKEmptyAndMultipartCompatibleMethods(t *testing.T) {
 	p := &peer{secret: strings.Repeat("a", 32)}

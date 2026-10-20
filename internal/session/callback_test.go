@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dunea/dujiao-next-telegram-bot/internal/callback"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestRedisCallbackReceiptsAcrossClientsAndStorageFailure(t *testing.T) {
@@ -120,7 +121,7 @@ func TestRedisCallbackReceiptExpiredAndCapacity(t *testing.T) {
 		server.ZAdd(index, float64(time.Now().Add(time.Hour).UnixMilli()), string(rune(i+100)))
 	}
 	newKey := callback.ReceiptKey(43, callback.Event{OrderID: 8})
-	if _, err := r.CallbackReceipts().Update(ctx, newKey, func(*callback.Receipt) error { return nil }); !errors.Is(err, callback.ErrStorage) {
+	if _, err := r.CallbackReceipts().Update(ctx, newKey, func(*callback.Receipt) error { return nil }); !errors.Is(err, callback.StorageCapacity) {
 		t.Fatal("capacity did not fail closed")
 	}
 }
@@ -137,13 +138,77 @@ func TestCallbackCASAcknowledgementLossDoesNotAuthorizeSend(t *testing.T) {
 				s.Events["order-paid"] = callback.Delivery{Fingerprint: key, Token: rand.Text(), Status: "posting", NotBefore: time.Now().Add(callback.DeliveryLease)}
 				return nil
 			})
-			if err == nil || called != 1 {
+			if !errors.Is(err, callback.StorageWrite) || called != 1 {
 				t.Fatal("receipt CAS failure returned success/replayed closure")
 			}
 			other := connectRedis(t, "redis://"+server.Addr())
 			receipt, err := other.CallbackReceipts().Update(context.Background(), key, func(*callback.Receipt) error { return nil })
 			if err != nil || (receipt.Events["order-paid"].Status == "posting") != after {
 				t.Fatal("receipt commit ambiguity not preserved")
+			}
+		})
+	}
+}
+
+// Interfere after the read but before the one-shot CAS. Unlike a transport
+// error, these receive a definite rejection from Redis; neither may replay fn.
+type receiptInterferenceHook struct{ beforeCAS func() }
+
+func (h receiptInterferenceHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h receiptInterferenceHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+func (h receiptInterferenceHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "eval" && cmd.Args()[1] == receiptCAS {
+			h.beforeCAS()
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func TestRedisReceiptDiagnosticCategories(t *testing.T) {
+	for _, mode := range []string{"read", "epoch", "corrupt", "expired", "conflict", "epoch during CAS"} {
+		t.Run(mode, func(t *testing.T) {
+			r, server := redisFixture(t)
+			ctx := context.Background()
+			key := callback.ReceiptKey(42, callback.Event{OrderID: 7})
+			_, err := r.CallbackReceipts().Update(ctx, key, func(*callback.Receipt) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := callback.StorageRead
+			switch mode {
+			case "read":
+				server.SetError("ERR PRIVATE_CONNECTION_DETAILS")
+			case "epoch":
+				server.FlushAll()
+				want = callback.StorageEpoch
+			case "corrupt":
+				server.Set(r.prefix+":callback:v1:"+key, "PRIVATE_CORRUPT_PAYLOAD")
+				want = callback.StorageInvalid
+			case "expired":
+				now := time.Now().Add(callback.ReceiptLifetime + time.Hour)
+				r.now = func() time.Time { return now }
+				want = callback.StorageExpired
+			case "conflict":
+				r.client.AddHook(receiptInterferenceHook{func() { server.Set(r.prefix+":callback:v1:"+key, "concurrent mutation") }})
+				want = callback.StorageConflict
+			case "epoch during CAS":
+				r.client.AddHook(receiptInterferenceHook{server.FlushAll})
+				want = callback.StorageEpoch
+			}
+			called := 0
+			_, err = r.CallbackReceipts().Update(ctx, key, func(s *callback.Receipt) error {
+				called++
+				s.Events["order-paid"] = callback.Delivery{Fingerprint: key, Token: rand.Text(), Status: "posting", NotBefore: time.Now().Add(callback.DeliveryLease)}
+				return nil
+			})
+			if !errors.Is(err, want) || !errors.Is(err, callback.ErrStorage) || strings.Contains(err.Error(), "PRIVATE") {
+				t.Fatalf("unexpected diagnostic for %s", mode)
+			}
+			if called > 1 || (mode != "conflict" && mode != "epoch during CAS" && called != 0) {
+				t.Fatal("storage failure ran or replayed mutation unexpectedly")
 			}
 		})
 	}

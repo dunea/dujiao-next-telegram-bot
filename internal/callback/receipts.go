@@ -19,6 +19,34 @@ var ErrStorage = errors.New("callback receipt storage unavailable")
 var ErrBusy = errors.New("callback delivery already in progress")
 var ErrChanged = errors.New("callback payload changed")
 
+// StorageFailure preserves only a fixed diagnostic category, never a Redis
+// error, key, payload or credential. It remains compatible with ErrStorage.
+type StorageFailure string
+
+const (
+	StorageRead     StorageFailure = "read_failed"
+	StorageEpoch    StorageFailure = "epoch_mismatch"
+	StorageInvalid  StorageFailure = "invalid_receipt"
+	StorageExpired  StorageFailure = "expired_receipt"
+	StorageWrite    StorageFailure = "write_failed"
+	StorageConflict StorageFailure = "cas_conflict"
+	StorageCapacity StorageFailure = "capacity_exhausted"
+)
+
+func (StorageFailure) Error() string { return ErrStorage.Error() }
+func (StorageFailure) Unwrap() error { return ErrStorage }
+
+func storageReason(err error) string {
+	var failure StorageFailure
+	if errors.As(err, &failure) {
+		switch failure {
+		case StorageRead, StorageEpoch, StorageInvalid, StorageExpired, StorageWrite, StorageConflict, StorageCapacity:
+			return string(failure)
+		}
+	}
+	return "unknown"
+}
+
 // Only hashes and delivery metadata are persisted, never amounts, receiving
 // details or notification text. Keep this separate from UI/financial guards.
 type Receipt struct {

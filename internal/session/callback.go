@@ -40,47 +40,58 @@ return 1
 
 func (c *callbackReceipts) Update(ctx context.Context, key string, fn func(*callback.Receipt) error) (callback.Receipt, error) {
 	if !callback.ValidReceiptKey(key) {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	keys := []string{c.r.prefix + ":epoch", c.r.prefix + ":callback:v1:" + key, c.r.prefix + ":callback:index:v1"}
 	values, err := c.r.client.Eval(ctx, receiptRead, keys, c.r.epoch).Slice()
 	if err != nil || len(values) != 1 {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageRead
 	}
 	body, ok := values[0].(string)
 	if !ok {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageEpoch
 	}
 	r := callback.Receipt{Version: 1, ExpiresAt: c.r.now().Add(callback.ReceiptLifetime), Events: make(map[string]callback.Delivery)}
 	if body != "" && (json.Unmarshal([]byte(body), &r) != nil || !callback.ValidReceipt(r)) {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageInvalid
 	}
 	if !c.r.now().Before(r.ExpiresAt) {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageExpired
 	}
 	original := callback.CloneReceipt(r)
 	if err := fn(&r); err != nil {
 		return callback.Receipt{}, err
 	}
 	if !callback.ValidReceipt(r) {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageInvalid
 	}
 	if body != "" && reflect.DeepEqual(original, r) {
 		return callback.CloneReceipt(r), nil
 	}
 	encoded, err := json.Marshal(r)
 	if err != nil {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageInvalid
 	}
 	ttl := r.ExpiresAt.Sub(c.r.now()).Milliseconds()
 	if ttl <= 0 || ttl > callback.ReceiptLifetime.Milliseconds() {
-		return callback.Receipt{}, callback.ErrStorage
+		return callback.Receipt{}, callback.StorageExpired
 	}
 	result, err := c.r.client.Eval(ctx, receiptCAS, keys, c.r.epoch, body, key, encoded, ttl, callback.ReceiptCapacity, callback.ReceiptLifetime.Milliseconds()).Int()
-	if err != nil || result != 1 {
-		return callback.Receipt{}, callback.ErrStorage
+	if err != nil {
+		return callback.Receipt{}, callback.StorageWrite
 	}
-	return callback.CloneReceipt(r), nil
+	switch result {
+	case 1:
+		return callback.CloneReceipt(r), nil
+	case 0:
+		return callback.Receipt{}, callback.StorageConflict
+	case -1:
+		return callback.Receipt{}, callback.StorageEpoch
+	case -2:
+		return callback.Receipt{}, callback.StorageCapacity
+	default:
+		return callback.Receipt{}, callback.StorageWrite
+	}
 }

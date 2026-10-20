@@ -94,6 +94,18 @@ func (p *peer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(w, map[string]bool{"ok": true})
 		return
 	}
+	if r.URL.Path == "/test/request-context" && r.Method == "GET" {
+		// Test-only transport probe: an HTTP request with no body lets net/http
+		// detect TCP half-close while the handler is still running.
+		timer := time.NewTimer(250 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+		case <-timer.C:
+		}
+		write(w, map[string]bool{"canceled": r.Context().Err() != nil})
+		return
+	}
 	if r.URL.Path == "/test/state" && r.Method == "GET" {
 		p.mu.Lock()
 		defer p.mu.Unlock()

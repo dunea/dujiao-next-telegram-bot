@@ -391,7 +391,10 @@ func (f *telegramFlow) countNotifications() int {
 	}
 	return count
 }
-func (f *telegramFlow) signed(config fixture, kind string, event callback.Event, want int) {
+
+type callbackResult struct{ Status, Stage string }
+
+func (f *telegramFlow) signed(config fixture, kind string, event callback.Event, want int) callbackResult {
 	f.s.t.Helper()
 	body, _ := json.Marshal(event)
 	path := "/internal/" + kind
@@ -406,18 +409,21 @@ func (f *telegramFlow) signed(config fixture, kind string, event callback.Event,
 	}
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.StatusCode != want {
+	var result callbackResult
+	parseErr := json.Unmarshal(responseBody, &result)
+	if resp.StatusCode != want || parseErr != nil {
 		_ = os.WriteFile(filepath.Join(f.s.dir, "callback-error.json"), responseBody, 0600)
-		var result struct {
-			Status string `json:"status"`
-		}
-		_ = json.Unmarshal(responseBody, &result)
 		reason := "unknown_response"
-		for _, known := range []string{"delivery_unavailable", "receipt_unavailable", "limiter_unavailable", "rate_limited", "notify_failed", "telegram_rate_limited"} {
+		for _, known := range []string{"delivery_busy", "delivery_unavailable", "receipt_unavailable", "limiter_unavailable", "rate_limited", "notify_failed", "telegram_rate_limited"} {
 			if result.Status == known {
 				reason = known
 			}
 		}
-		f.s.t.Fatalf("callback %s: got %d, expected %d, reason=%s", kind, resp.StatusCode, want, reason)
+		stage := "unknown"
+		if result.Stage == "claim" || result.Stage == "finalize" {
+			stage = result.Stage
+		}
+		f.s.t.Fatalf("callback %s: got %d, expected %d, reason=%s stage=%s", kind, resp.StatusCode, want, reason, stage)
 	}
+	return result
 }

@@ -131,11 +131,11 @@ func classify(status int, retry string, body []byte, health bool) string {
 	if envelope.Status == "rate_limited" {
 		return "limited"
 	}
-	if status == 503 && (envelope.Status == "delivery_unavailable" || envelope.Status == "notify_failed" || envelope.Status == "telegram_rate_limited") {
+	if status == 503 && (envelope.Status == "delivery_busy" || envelope.Status == "notify_failed" || envelope.Status == "telegram_rate_limited") {
 		return "retry"
 	}
 	// Explicit storage failures, generic 5xx, authentication and payload errors
-	// are not expected denials. Ambiguous delivery_unavailable has a separate,
+	// are not expected denials. Only explicit busy/delivery failures have a
 	// small retry budget and must resolve during the per-resource drain.
 	return "unexpected"
 }

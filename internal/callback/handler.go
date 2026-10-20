@@ -145,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 func (h *Handler) gate(w http.ResponseWriter, request *http.Request, key string, rule ratelimit.Rule, limiter ratelimit.Limiter) bool {
 	decision, err := limiter.Allow(request.Context(), key, rule)
 	if err != nil {
-		h.auditIngress(request.Context(), operations.Unavailable)
+		h.unavailable(request.Context(), strings.TrimPrefix(request.URL.Path, "/internal/"), "limiter", err)
 		w.Header().Set("Retry-After", "1")
 		h.respond(w, http.StatusServiceUnavailable, "limiter_unavailable")
 		return false
@@ -175,6 +175,31 @@ func (h *Handler) auditIngress(ctx context.Context, outcome operations.Outcome) 
 		action = operations.Session
 	}
 	h.options.Audit.Record(operations.Event{Action: action, Outcome: outcome})
+}
+
+// A disconnected request must not suppress local diagnostics. This only uses
+// the bounded in-memory sampler and local logging/audit, not a network retry.
+func (h *Handler) unavailable(ctx context.Context, kind, stage string, err error) {
+	requestState := "active"
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		requestState = "deadline_exceeded"
+	} else if ctx.Err() != nil {
+		requestState = "canceled"
+	}
+	reason := storageReason(err)
+	local := context.WithoutCancel(ctx)
+	h.auditIngress(local, operations.Unavailable)
+	decision, sampleErr := h.ingress.Allow(local, "callback-diagnostic:"+stage+":"+reason+":"+requestState, ratelimit.Rule{Limit: 1, Window: time.Minute})
+	if sampleErr == nil && decision.Allowed {
+		h.logger.Warn("callback unavailable", "event", kind, "stage", stage, "reason", reason, "request_context", requestState)
+	}
+}
+
+func (h *Handler) receiptUnavailable(w http.ResponseWriter, stage string) {
+	w.Header().Set("Retry-After", "2")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "receipt_unavailable", "stage": stage})
 }
 
 func (h *Handler) respond(w http.ResponseWriter, status int, result string) {
@@ -238,11 +263,13 @@ func (h *Handler) deliver(w http.ResponseWriter, r *http.Request, uid int64, kin
 			h.respond(w, http.StatusConflict, "event_changed")
 			return
 		}
-		if errors.Is(err, ErrStorage) {
-			h.auditIngress(r.Context(), operations.Unavailable)
+		if errors.Is(err, ErrBusy) {
+			w.Header().Set("Retry-After", "2")
+			h.respond(w, http.StatusServiceUnavailable, "delivery_busy")
+			return
 		}
-		w.Header().Set("Retry-After", "2")
-		h.respond(w, http.StatusServiceUnavailable, "delivery_unavailable")
+		h.unavailable(r.Context(), kind, "claim", err)
+		h.receiptUnavailable(w, "claim")
 		return
 	}
 	if duplicate {
@@ -280,9 +307,8 @@ func (h *Handler) deliver(w http.ResponseWriter, r *http.Request, uid int64, kin
 		return nil
 	})
 	if saveErr != nil {
-		h.auditIngress(ctx, operations.Unavailable)
-		w.Header().Set("Retry-After", "2")
-		h.respond(w, 503, "receipt_unavailable")
+		h.unavailable(r.Context(), kind, "finalize", saveErr)
+		h.receiptUnavailable(w, "finalize")
 		return
 	}
 	if status == "retry" {
