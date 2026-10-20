@@ -126,8 +126,8 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 			if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
 				return
 			}
-			text := tr(state.Locale, "请回复这条消息输入充值金额（大于 0，最多两位小数，上限 1,000,000）。发送 /cancel 取消。\n币种：", "請回覆這則訊息輸入儲值金額（大於 0，最多兩位小數，上限 1,000,000）。傳送 /cancel 取消。\n幣別：", "Reply with an amount greater than 0, up to 2 decimal places, maximum 1,000,000. Send /cancel to cancel.\nCurrency: ") + html.EscapeString(draft.Currency)
-			a.publishRecharge(ctx, userID, &next, 0, false, text, models.ForceReply{ForceReply: true, Selective: true})
+			a.promptCustomRecharge(ctx, userID, &next, "")
+			a.clearInputButtons(ctx, draft.ChatID, draft.MessageID)
 			return
 		}
 		for _, amount := range rechargePresets {
@@ -185,10 +185,29 @@ func (a *App) handleRechargeCallback(ctx context.Context, query *models.Callback
 	}
 }
 
+func (a *App) promptCustomRecharge(ctx context.Context, userID int64, draft *session.RechargeDraft, notice string) {
+	locale := a.sessions.Get(userID).Locale
+	text := tr(locale, "请回复这条消息输入充值金额（大于 0，最多两位小数，上限 1,000,000）。发送 /back 返回金额选择，/cancel 取消。\n币种：", "請回覆這則訊息輸入儲值金額（大於 0，最多兩位小數，上限 1,000,000）。傳送 /back 返回金額選擇，/cancel 取消。\n幣別：", "Reply with an amount greater than 0, up to 2 decimal places, maximum 1,000,000. Send /back to choose an amount or /cancel to cancel.\nCurrency: ") + html.EscapeString(draft.Currency)
+	a.publishRecharge(ctx, userID, draft, 0, false, inputNotice(text, notice), models.ForceReply{ForceReply: true, Selective: true})
+}
+
 func (a *App) handleRechargeAmount(ctx context.Context, message *models.Message) {
 	state := a.sessions.Get(message.From.ID)
 	draft := state.Recharge
 	if draft == nil || draft.Submitting || draft.ChatID != message.Chat.ID || message.Chat.ID != message.From.ID {
+		return
+	}
+	if command, _ := parseCommand(message.Text); command == "/back" {
+		if a.claimRecharge(message.From.ID, draft.ID, draft.MessageID, "recharge_amount") != nil {
+			a.askRechargeAmount(ctx, message.Chat.ID, message.From.ID, false, 0)
+			stored := a.sessions.Update(message.From.ID, func(s *session.State) {
+				if s.Recharge != nil && s.Recharge.ID == draft.ID {
+					s.Recharge.Submitting = false // Read failure must not lock input.
+				}
+			})
+			a.sessionOK(ctx, message.Chat.ID, stored.Err)
+			a.clearInputButtons(ctx, draft.ChatID, draft.MessageID)
+		}
 		return
 	}
 	if draft.Custom && (message.ReplyToMessage == nil || message.ReplyToMessage.ID != draft.MessageID) {
@@ -197,7 +216,25 @@ func (a *App) handleRechargeAmount(ctx context.Context, message *models.Message)
 	}
 	amount, ok := normalizeMoneyInput(message.Text)
 	if !ok {
-		a.send(ctx, message.Chat.ID, tr(state.Locale, "金额格式不正确，请输入大于 0、最多两位小数且不超过 1,000,000 的金额。", "金額格式不正確，請輸入大於 0、最多兩位小數且不超過 1,000,000 的金額。", "Enter an amount greater than 0, with up to 2 decimal places and no more than 1,000,000."), nil)
+		notice := tr(state.Locale, "金额格式不正确，请输入大于 0、最多两位小数且不超过 1,000,000 的金额。", "金額格式不正確，請輸入大於 0、最多兩位小數且不超過 1,000,000 的金額。", "Enter an amount greater than 0, with up to 2 decimal places and no more than 1,000,000.")
+		if draft.Custom {
+			if a.claimRecharge(message.From.ID, draft.ID, draft.MessageID, "recharge_amount") == nil {
+				return
+			}
+			next := *draft
+			next.ID, next.MessageID, next.Submitting = rand.Text(), 0, false
+			changed := false
+			stored := a.sessions.Update(message.From.ID, func(s *session.State) {
+				if s.Flow == "recharge_amount" && s.Recharge != nil && s.Recharge.ID == draft.ID && s.Recharge.Submitting {
+					s.Recharge, changed = &next, true
+				}
+			})
+			if a.sessionOK(ctx, message.Chat.ID, stored.Err) && changed {
+				a.promptCustomRecharge(ctx, message.From.ID, &next, notice)
+			}
+		} else {
+			a.send(ctx, message.Chat.ID, notice, cancelInputKeyboard(state.Locale, state))
+		}
 		return
 	}
 	a.selectRechargeAmount(ctx, message.From.ID, draft, amount, false)

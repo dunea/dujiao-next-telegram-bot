@@ -23,6 +23,7 @@ type pendingFixture struct {
 	latest                        *dujiao.PaymentResult
 	posts, cancels, photos, reads int
 	texts                         []string
+	methods                       []string
 	markups                       []models.InlineKeyboardMarkup
 	postFailure                   bool
 	cancelFailure                 bool
@@ -57,6 +58,7 @@ func newPendingFixture(t *testing.T) (*App, *pendingFixture) {
 				defer r.MultipartForm.RemoveAll()
 			}
 			if method == "sendMessage" || method == "editMessageText" {
+				f.methods = append(f.methods, method)
 				f.texts = append(f.texts, r.FormValue("text"))
 				var k models.InlineKeyboardMarkup
 				_ = json.Unmarshal([]byte(r.FormValue("reply_markup")), &k)

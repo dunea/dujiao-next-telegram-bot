@@ -74,7 +74,7 @@ func TestTelegramOrderNavigation(t *testing.T) {
 	// cancelled filter but its return button preserves cancelled page two.
 	f.command(pending.OrderNo)
 	view = f.waitButton("resume:")
-	if !strings.Contains(view.Text, pending.OrderNo) || button(view, "orders:x:2", "") == "" || strings.Contains(view.Text, "交付：已交付") {
+	if view.Method != "sendMessage" || view.ID <= f.inputID || !strings.Contains(view.Text, pending.OrderNo) || button(view, "orders:x:2", "") == "" || strings.Contains(view.Text, "交付：已交付") {
 		t.Fatal("restarted search lost owner/context or fabricated delivery")
 	}
 	f.click(view, button(view, "orders:x:2", ""))

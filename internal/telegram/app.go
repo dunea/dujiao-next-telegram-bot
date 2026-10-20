@@ -248,7 +248,7 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 		a.finishInvite(ctx, message, strings.TrimSpace(message.Text))
 		return
 	}
-	if state.Flow == "recharge_amount" && !strings.HasPrefix(message.Text, "/") {
+	if state.Flow == "recharge_amount" && (!strings.HasPrefix(message.Text, "/") || command == "/back") {
 		a.handleRechargeAmount(ctx, message)
 		return
 	}
@@ -281,10 +281,10 @@ func (a *App) handleUpdate(ctx context.Context, _ *tgbot.Bot, update *models.Upd
 			return
 		}
 		if state.WithdrawalGuard != nil {
-			a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前填写；已发出的提现申请无法通过 /cancel 撤回，请核对提现记录。", "已取消目前填寫；已送出的提領申請無法透過 /cancel 撤回，請核對提領紀錄。", "Current input cancelled. An already submitted withdrawal cannot be recalled with /cancel; check withdrawal history."), nil)
+			a.send(ctx, message.Chat.ID, tr(state.Locale, "已退出当前填写；已提交或结果未明的提现不会撤回，请核对提现记录。", "已離開目前填寫；已送出或結果不明的提領不會撤回，請核對提領紀錄。", "Input closed. Submitted or unconfirmed withdrawals are not recalled; check withdrawal history."), cancelInputKeyboard(state.Locale, state))
 			return
 		}
-		a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前操作。", "已取消目前操作。", "Current operation cancelled."), nil)
+		a.send(ctx, message.Chat.ID, tr(state.Locale, "已取消当前填写，已创建的订单和支付记录不会撤销。", "已取消目前填寫，已建立的訂單與付款紀錄不會撤銷。", "Input cancelled. Existing orders and payment records are not cancelled."), cancelInputKeyboard(state.Locale, state))
 	default:
 		a.send(ctx, message.Chat.ID, tr(state.Locale, "请使用下方菜单选择功能。", "請使用下方選單選擇功能。", "Please choose an action below."), a.homeKeyboard(state.Locale))
 	}
@@ -375,6 +375,15 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 	}
 	// Reject flooding before session reads and ACK with no extra chat message.
 	if !a.allowCallbackIngress(ctx, query) {
+		return
+	}
+	if query.Data == "noop" || query.Data == "none" {
+		locale := a.sessions.Get(query.From.ID).Locale
+		text := tr(locale, "当前商品或规格暂不可购买，请选择其他商品。", "目前商品或規格暫無法購買，請選擇其他商品。", "This product or option is unavailable. Choose another item.")
+		if query.Data == "none" {
+			text = tr(locale, "已达到可选数量范围，可点击「输入数量」指定范围内的数量。", "已達可選數量範圍，可點擊「輸入數量」指定範圍內的數量。", "Quantity limit reached. Use Enter quantity to choose within the allowed range.")
+		}
+		_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID, Text: text})
 		return
 	}
 	_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{CallbackQueryID: query.ID})
@@ -560,12 +569,6 @@ func (a *App) handleCallback(ctx context.Context, query *models.CallbackQuery) {
 		a.showHelpEdit(ctx, message.Chat.ID, message.ID, locale)
 	case "none":
 		return
-	case "noop":
-		_, _ = a.bot.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
-			CallbackQueryID: query.ID,
-			Text:            tr(locale, "该商品暂不支持机器人下单。", "此商品暫不支援機器人下單。", "This product cannot be ordered in the bot yet."),
-			ShowAlert:       true,
-		})
 	}
 }
 

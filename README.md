@@ -49,7 +49,7 @@
 
 `main` 正在开发 `1.0.0-dev`。[兼容性矩阵与升级测试](docs/compatibility.md) 已加入固定源码证据、只读预检、Bot Redis 跨版本测试，以及三个官方 Dujiao-Next 镜像的真实联调和 SQLite/PostgreSQL 逐版本迁移、备份恢复测试。可运行 `make real-upstream-test` 复验；全部使用独立合成数据，不代表 v1.0 已正式发布或商家真实支付渠道已验收。
 
-v1.0 的[整体验收矩阵](docs/acceptance-v1.0.md)覆盖购买、支付、充值、交付、查单及售后，以及同一买家的跨功能旅程。干净已提交源码可运行 `make release-candidate` 生成四平台候选包并自动校验来源、摘要、架构、许可证和公开文档；[发布准备与人工门槛](docs/release-v1.0.md)明确剩余真人客户端/支付沙箱事项，不自动发布正式版。
+v1.0 的[整体验收矩阵](docs/acceptance-v1.0.md)覆盖购买、支付、充值、交付、查单及售后，以及同一买家的跨功能旅程。[交互巡检约定](docs/interaction-review.md)记录按钮、输入纠错和返回逻辑。干净已提交源码可运行 `make release-candidate` 生成四平台候选包并自动校验来源、摘要、架构、许可证和公开文档；[发布准备与人工门槛](docs/release-v1.0.md)明确剩余真人客户端/支付沙箱事项，不自动发布正式版。
 
 开发版另补齐[支付/充值回调故障与 Telegram 全链路验收](docs/callbacks-and-e2e.md)：通知回执去重、Redis 重启恢复、Telegram 限流/断连处理；`make telegram-e2e` 在两种数据库上运行真实 Bot + 官方 v1.5.0 + 隔离 Telegram/支付模拟端点，不需要真实 Token。响应丢失时仍可能重复通知，不承诺消息恰好一次。
 

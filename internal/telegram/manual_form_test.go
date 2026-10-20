@@ -35,6 +35,7 @@ type formFixture struct {
 	chatIDs              []string
 	adminSent            chan string
 	markups              []string
+	callbackAnswers      []string
 	walletCurrency       string
 	previewFails         bool
 	couponExpired        bool
@@ -70,6 +71,14 @@ func newFormFixture(t *testing.T, fields []dujiao.ManualFormField) (*App, *formF
 			method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 			var result any = true
 			switch method {
+			case "answerCallbackQuery":
+				_ = r.ParseMultipartForm(1 << 20)
+				if r.MultipartForm != nil {
+					defer r.MultipartForm.RemoveAll()
+				}
+				fixture.mu.Lock()
+				fixture.callbackAnswers = append(fixture.callbackAnswers, r.FormValue("text"))
+				fixture.mu.Unlock()
 			case "getMe":
 				result = map[string]any{"id": 999, "is_bot": true, "first_name": "Test", "username": "test_bot"}
 			case "sendMessage", "editMessageText":

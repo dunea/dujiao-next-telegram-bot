@@ -58,18 +58,16 @@ func orderViewCallback(id uint, code string, page int) string {
 }
 
 func (a *App) showOrderFilters(ctx context.Context, chatID int64, messageID int, locale, code string, page int) {
-	var rows [][]models.InlineKeyboardButton
-	for index, filter := range orderFilters {
-		if index%3 == 0 {
-			rows = append(rows, nil)
-		}
+	var choices []models.InlineKeyboardButton
+	for _, filter := range orderFilters {
 		label := orderFilterLabel(locale, filter.code)
 		if filter.code == code {
 			label = "✓ " + label
 		}
-		rows[len(rows)-1] = append(rows[len(rows)-1], models.InlineKeyboardButton{Text: label, CallbackData: "orders:" + filter.code + ":1"})
+		choices = append(choices, models.InlineKeyboardButton{Text: label, CallbackData: "orders:" + filter.code + ":1"})
 	}
-	rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 返回订单列表", "‹ 返回訂單列表", "‹ Back to orders"), CallbackData: fmt.Sprintf("orders:%s:%d", code, page)}})
+	rows := compactActionRows(choices)
+	rows = append(rows, orderListBackButtons(locale, code, page))
 	a.edit(ctx, chatID, messageID, tr(locale, "选择订单状态（按商店原始状态筛选）：", "選擇訂單狀態（按商店原始狀態篩選）：", "Choose an order status (exact store status):"), models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
@@ -111,7 +109,21 @@ func (a *App) handleOrderLookupMessage(ctx context.Context, message *models.Mess
 		a.send(ctx, message.Chat.ID, tr(state.Locale, "请回复当前查找提示，或直接发送 /orders 订单号。", "請回覆目前查找提示，或直接傳送 /orders 訂單號。", "Reply to the current search prompt, or send /orders ORDER_NUMBER."), nil)
 		return
 	}
-	a.findOrder(ctx, message.Chat.ID, draft.MessageID, message.From.ID, message.Text, draft.Filter, draft.Page, draft)
+	if command, _ := parseCommand(message.Text); command == "/back" {
+		accepted := false
+		stored := a.sessions.Update(message.From.ID, func(s *session.State) {
+			if s.Flow == "order_lookup" && s.OrderLookup != nil && s.OrderLookup.ID == draft.ID {
+				s.Flow, s.OrderLookup, accepted = "", nil, true
+			}
+		})
+		if a.sessionOK(ctx, message.Chat.ID, stored.Err) && accepted {
+			a.clearInputButtons(ctx, message.Chat.ID, draft.MessageID)
+			a.showOrders(ctx, message.Chat.ID, message.From.ID, orderFilterStatus(draft.Filter), draft.Page, false, 0)
+		}
+		return
+	}
+	// Text input always gets a new result below the user's message.
+	a.findOrder(ctx, message.Chat.ID, 0, message.From.ID, message.Text, draft.Filter, draft.Page, draft)
 }
 
 func (a *App) findOrder(ctx context.Context, chatID int64, messageID int, userID int64, raw, code string, page int, expected *session.OrderLookupInput) {
@@ -119,18 +131,19 @@ func (a *App) findOrder(ctx context.Context, chatID int64, messageID int, userID
 		return
 	}
 	locale := a.sessions.Get(userID).Locale
+	back := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{orderListBackButtons(locale, code, page)}}
 	number := strings.TrimSpace(raw)
 	if !validOrderNumber(number) {
-		a.send(ctx, chatID, tr(locale, "请输入完整订单号：仅支持字母、数字、横线和下划线，最多 100 个字符。", "請輸入完整訂單號：僅支援字母、數字、橫線和底線，最多 100 個字元。", "Enter a full order number: letters, digits, hyphens and underscores only, up to 100 characters."), nil)
+		a.send(ctx, chatID, tr(locale, "请输入完整订单号：仅支持字母、数字、横线和下划线，最多 100 个字符。", "請輸入完整訂單號：僅支援字母、數字、橫線和底線，最多 100 個字元。", "Enter a full order number: letters, digits, hyphens and underscores only, up to 100 characters."), back)
 		return
 	}
 	order, err := a.api.OrderByOrderNo(ctx, strconv.FormatInt(userID, 10), locale, number)
 	if err != nil {
-		a.orderReadFailure(ctx, chatID, locale, err)
+		a.orderReadFailure(ctx, chatID, locale, err, back)
 		return
 	}
 	if order.OrderID == 0 || order.OrderNo != number {
-		a.orderReadFailure(ctx, chatID, locale, nil)
+		a.orderReadFailure(ctx, chatID, locale, nil, back)
 		return
 	}
 	if expected != nil {
@@ -143,20 +156,25 @@ func (a *App) findOrder(ctx context.Context, chatID int64, messageID int, userID
 		if !a.sessionOK(ctx, chatID, state.Err) || !accepted {
 			return
 		}
+		a.clearInputButtons(ctx, chatID, expected.MessageID)
 	}
 	a.renderOrder(ctx, chatID, messageID, locale, order, "", code, page)
 }
 
 // Neither upstream errors nor user input belongs in logs. Missing and unowned
 // orders are indistinguishable; a store outage is not reported as "no orders".
-func (a *App) orderReadFailure(ctx context.Context, chatID int64, locale string, err error) {
+func (a *App) orderReadFailure(ctx context.Context, chatID int64, locale string, err error, keyboards ...models.InlineKeyboardMarkup) {
+	var markup models.ReplyMarkup
+	if len(keyboards) > 0 {
+		markup = keyboards[0]
+	}
 	var api *dujiao.APIError
 	if errors.As(err, &api) && api.HTTPStatus == 404 && api.ErrorCode == "order_not_found" {
-		a.send(ctx, chatID, tr(locale, "未找到你名下的这个订单，请核对完整订单号后重试。", "未找到你名下的這個訂單，請核對完整訂單號後重試。", "No matching order in your account. Check the full order number and try again."), nil)
+		a.send(ctx, chatID, tr(locale, "未找到你名下的这个订单，请核对完整订单号后重试。", "未找到你名下的這個訂單，請核對完整訂單號後重試。", "No matching order in your account. Check the full order number and try again."), markup)
 		return
 	}
 	a.logger.Warn("order read unavailable")
-	a.send(ctx, chatID, tr(locale, "订单查询暂时不可用，请稍后重试。", "訂單查詢暫時無法使用，請稍後再試。", "Order lookup is temporarily unavailable. Please try again later."), nil)
+	a.send(ctx, chatID, tr(locale, "订单查询暂时不可用，请稍后重试。", "訂單查詢暫時無法使用，請稍後再試。", "Order lookup is temporarily unavailable. Please try again later."), markup)
 }
 
 func orderPaymentStatus(locale, status string) string {

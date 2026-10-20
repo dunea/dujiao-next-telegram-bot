@@ -82,7 +82,10 @@ func TestTelegramAffiliateWithdrawal(t *testing.T) {
 		f.click(entry, button(entry, "affapply", ""))
 		prompt := f.waitText("请回复本条消息输入提现金额")
 		f.command("0.10", prompt)
-		f.waitText("金额无效")
+		prompt = f.waitText("金额无效")
+		if !strings.Contains(prompt.Text, "请回复本条消息输入提现金额") || prompt.Method != "sendMessage" || prompt.ID <= f.inputID {
+			t.Fatal("withdrawal correction must be a fresh replyable amount prompt")
+		}
 		f.command("0.50", prompt)
 		channels := f.waitButton("wd:")
 		assertCommerceKeyboard(t, channels, "", "wd:")

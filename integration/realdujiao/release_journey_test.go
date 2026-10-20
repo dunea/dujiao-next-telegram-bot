@@ -94,8 +94,10 @@ func TestTelegramReleaseJourney(t *testing.T) {
 	f.click(menu, button(menu, "buy:", ":2"))
 	prompt := f.waitText("交付邮箱")
 	f.command("invalid-email", prompt)
-	f.waitText("填写内容不符合要求")
-	prompt = f.waitText("交付邮箱")
+	prompt = f.waitText("填写内容不符合要求")
+	if !strings.Contains(prompt.Text, "交付邮箱") || prompt.Method != "sendMessage" || prompt.ID <= f.inputID {
+		t.Fatal("invalid input must have one fresh, replyable prompt below the input")
+	}
 	f.command("journey@example.invalid", prompt)
 	preview := f.waitButton("formconfirm:")
 	assertCommerceKeyboard(t, preview, "formconfirm:", "qtyedit:", "coupon:", "formedit:", "product:", "home")

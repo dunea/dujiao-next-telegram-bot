@@ -137,7 +137,7 @@ func (a *App) withdrawalReadFailure(ctx context.Context, chatID, userID int64, e
 	}
 }
 
-func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session.WithdrawalDraft) {
+func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session.WithdrawalDraft, notices ...string) {
 	locale := a.sessions.Get(userID).Locale
 	text := "<b>" + tr(locale, "申请提现", "申請提領", "Request withdrawal") + "</b>\n\n"
 	var markup models.ReplyMarkup = models.ForceReply{ForceReply: true, Selective: true}
@@ -170,7 +170,7 @@ func (a *App) promptWithdrawal(ctx context.Context, userID int64, draft *session
 	default:
 		return
 	}
-	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: draft.ChatID, Text: text, ParseMode: models.ParseModeHTML, ReplyMarkup: markup})
+	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: draft.ChatID, Text: inputNotice(text, notices...), ParseMode: models.ParseModeHTML, ReplyMarkup: markup})
 	if err != nil {
 		a.logger.Warn("send withdrawal prompt failed", "user_id", userID)
 		a.clearWithdrawal(userID, draft.ID, false)
@@ -216,12 +216,17 @@ func (a *App) handleWithdrawalMessage(ctx context.Context, message *models.Messa
 		return
 	}
 	input := strings.TrimSpace(message.Text)
+	retry := func(notice string) {
+		if next := a.advanceWithdrawal(userID, draft, func(*session.WithdrawalDraft) {}); next != nil {
+			a.promptWithdrawal(ctx, userID, next, notice)
+		}
+	}
 	var next *session.WithdrawalDraft
 	switch draft.Step {
 	case "amount":
 		amount, ok := withdrawalAmount(input, draft.Minimum, draft.Available)
 		if !ok {
-			a.send(ctx, message.Chat.ID, tr(state.Locale, "金额无效：请使用大于 0、最多两位小数的普通数字，且不低于最低提现金额、不超过可用佣金。", "金額無效：請使用大於 0、最多兩位小數的一般數字，且不低於最低提領金額、不超過可用佣金。", "Invalid amount. Use a positive decimal with up to two places, not below the minimum or above available commission."), nil)
+			retry(tr(state.Locale, "金额无效：请使用大于 0、最多两位小数的普通数字，且不低于最低提现金额、不超过可用佣金。", "金額無效：請使用大於 0、最多兩位小數的一般數字，且不低於最低提領金額、不超過可用佣金。", "Invalid amount. Use a positive decimal with up to two places, not below the minimum or above available commission."))
 			return
 		}
 		next = a.advanceWithdrawal(userID, draft, func(current *session.WithdrawalDraft) {
@@ -233,13 +238,13 @@ func (a *App) handleWithdrawalMessage(ctx context.Context, message *models.Messa
 		})
 	case "custom_channel":
 		if !validWithdrawalText(input, 50) {
-			a.send(ctx, message.Chat.ID, tr(state.Locale, "渠道名称应为 1–50 个可见字符的单行文字。", "管道名稱應為 1–50 個可見字元的單行文字。", "Use a single-line channel name of 1–50 visible characters."), nil)
+			retry(tr(state.Locale, "渠道名称应为 1–50 个可见字符的单行文字。", "管道名稱應為 1–50 個可見字元的單行文字。", "Use a single-line channel name of 1–50 visible characters."))
 			return
 		}
 		next = a.advanceWithdrawal(userID, draft, func(current *session.WithdrawalDraft) { current.Channel = input; current.Step = "account" })
 	case "account":
 		if !validWithdrawalText(input, 200) {
-			a.send(ctx, message.Chat.ID, tr(state.Locale, "收款信息应为 1–200 个可见字符的单行文字，不得包含换行或隐藏控制字符。", "收款資訊應為 1–200 個可見字元的單行文字，不得包含換行或隱藏控制字元。", "Receiving details must be a single line of 1–200 visible characters without hidden controls."), nil)
+			retry(tr(state.Locale, "收款信息应为 1–200 个可见字符的单行文字，不得包含换行或隐藏控制字符。", "收款資訊應為 1–200 個可見字元的單行文字，不得包含換行或隱藏控制字元。", "Receiving details must be a single line of 1–200 visible characters without hidden controls."))
 			return
 		}
 		next = a.advanceWithdrawal(userID, draft, func(current *session.WithdrawalDraft) { current.Account = input; current.Step = "confirm" })

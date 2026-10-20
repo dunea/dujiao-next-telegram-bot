@@ -112,17 +112,19 @@ func TestRechargeCustomAmountAndValidation(t *testing.T) {
 	if !draft.Custom || draft.MessageID == 0 || !strings.Contains(fixture.markups[len(fixture.markups)-1], `"force_reply":true`) {
 		t.Fatal("custom amount did not request a reply")
 	}
-	for _, test := range []struct {
-		text   string
-		prompt int
-	}{
-		{"12.34", draft.MessageID - 1}, {"0", draft.MessageID}, {"-1", draft.MessageID}, {"1.234", draft.MessageID}, {"NaN", draft.MessageID}, {"1000000.01", draft.MessageID},
-	} {
-		app.handleUpdate(context.Background(), nil, giftCardMessage(test.text, test.prompt, 42, 42))
+	app.handleUpdate(context.Background(), nil, giftCardMessage("12.34", draft.MessageID-1, 42, 42))
+	for _, text := range []string{"0", "-1", "1.234", "NaN", "1000000.01"} {
+		draft = app.sessions.Get(42).Recharge
+		before := len(fixture.texts)
+		app.handleUpdate(context.Background(), nil, giftCardMessage(text, draft.MessageID, 42, 42))
 		if state := app.sessions.Get(42); state.Flow != "recharge_amount" || state.Recharge.Amount != "" {
-			t.Fatalf("accepted invalid custom input %q", test.text)
+			t.Fatalf("accepted invalid custom input %q", text)
+		}
+		if len(fixture.texts) != before+1 || app.sessions.Get(42).Recharge.MessageID == draft.MessageID || !strings.Contains(fixture.markups[len(fixture.markups)-1], `"force_reply":true`) {
+			t.Fatal("custom correction must be one fresh replyable prompt")
 		}
 	}
+	draft = app.sessions.Get(42).Recharge
 	app.handleUpdate(context.Background(), nil, giftCardMessage("12.34", draft.MessageID, 42, 42))
 	if got := app.sessions.Get(42); got.Flow != "recharge_channels" || got.Recharge.Amount != "12.34" || got.Recharge.MessageID == draft.MessageID {
 		t.Fatalf("custom amount state = %#v", got)

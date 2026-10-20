@@ -34,9 +34,10 @@ func (a *App) askGiftCard(ctx context.Context, chatID, userID int64) {
 	a.sendGiftCardPrompt(ctx, userID, input)
 }
 
-func (a *App) sendGiftCardPrompt(ctx context.Context, userID int64, input *session.GiftCardInput) {
+func (a *App) sendGiftCardPrompt(ctx context.Context, userID int64, input *session.GiftCardInput, notice ...string) {
 	locale := a.sessions.Get(userID).Locale
 	text := tr(locale, "请回复这条消息输入礼品卡兑换码。发送 /back 返回钱包，/cancel 取消。", "請回覆這則訊息輸入禮品卡兌換碼。傳送 /back 返回錢包，/cancel 取消。", "Reply to this message with your gift card code. Send /back to return to your wallet or /cancel to cancel.")
+	text = inputNotice(text, notice...)
 	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: input.ChatID, Text: text, ReplyMarkup: models.ForceReply{ForceReply: true, Selective: true}})
 	if err != nil {
 		a.logger.Error("send gift card prompt", "error", err)
@@ -71,8 +72,7 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 	}
 	code := strings.ToUpper(strings.TrimSpace(message.Text))
 	if code == "" || utf8.RuneCountInString(code) > 128 || strings.IndexFunc(code, unicode.IsControl) >= 0 {
-		a.send(ctx, chatID, tr(state.Locale, "兑换码格式不正确，请输入 1–128 个字符的单行兑换码。", "兌換碼格式不正確，請輸入 1–128 個字元的單行兌換碼。", "Enter a single-line gift card code of 1–128 characters."), nil)
-		a.retryGiftCard(ctx, userID, input.ID)
+		a.retryGiftCard(ctx, userID, input.ID, tr(state.Locale, "兑换码格式不正确，请输入 1–128 个字符的单行兑换码。", "兌換碼格式不正確，請輸入 1–128 個字元的單行兌換碼。", "Enter a single-line gift card code of 1–128 characters."))
 		return
 	}
 	if !a.allowWrite(ctx, chatID, userID, operations.GiftCard) {
@@ -100,11 +100,11 @@ func (a *App) handleGiftCardMessage(ctx context.Context, message *models.Message
 		} else {
 			a.logger.Warn("gift card redemption result unavailable", "user_id", userID)
 		}
-		a.send(ctx, chatID, text, giftCardResultKeyboard(state.Locale))
 		if retry {
-			a.retryGiftCard(ctx, userID, input.ID)
+			a.retryGiftCard(ctx, userID, input.ID, text)
 		} else {
 			a.clearGiftCard(userID, input.ID)
+			a.send(ctx, chatID, text, giftCardResultKeyboard(state.Locale))
 		}
 		return
 	}
@@ -128,7 +128,7 @@ func (a *App) clearGiftCard(userID int64, id string) bool {
 	return result.Err == nil && cleared
 }
 
-func (a *App) retryGiftCard(ctx context.Context, userID int64, id string) {
+func (a *App) retryGiftCard(ctx context.Context, userID int64, id string, notice ...string) {
 	input := &session.GiftCardInput{ID: rand.Text(), ChatID: userID, ExpiresAt: time.Now().Add(10 * time.Minute)}
 	changed := false
 	result := a.sessions.Update(userID, func(state *session.State) {
@@ -139,14 +139,14 @@ func (a *App) retryGiftCard(ctx context.Context, userID int64, id string) {
 		}
 	})
 	if a.sessionOK(ctx, userID, result.Err) && changed {
-		a.sendGiftCardPrompt(ctx, userID, input)
+		a.sendGiftCardPrompt(ctx, userID, input, notice...)
 	}
 }
 
 func giftCardResultKeyboard(locale string) models.InlineKeyboardMarkup {
 	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{
 		{{Text: tr(locale, "查看余额", "查看餘額", "View balance"), CallbackData: "wallet"}, {Text: tr(locale, "交易流水", "交易明細", "Transactions"), CallbackData: "walletlog:1"}},
-		{{Text: tr(locale, "兑换其他礼品卡", "兌換其他禮品卡", "Redeem another card"), CallbackData: "giftcard"}},
+		{{Text: tr(locale, "兑换其他礼品卡", "兌換其他禮品卡", "Redeem another card"), CallbackData: "giftcard"}, {Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"}},
 	}}
 }
 

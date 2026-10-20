@@ -56,7 +56,7 @@ func (a *App) expiredForm(ctx context.Context, chatID int64, locale string) {
 	a.send(ctx, chatID, tr(locale, "订单预览或购买资料已失效，请重新打开商品。", "訂單預覽或購買資料已失效，請重新開啟商品。", "This checkout is no longer active. Reopen the product."), a.homeKeyboard(locale))
 }
 
-func (a *App) promptForm(ctx context.Context, user *models.User, editID int) {
+func (a *App) promptForm(ctx context.Context, user *models.User, editID int, notice ...string) {
 	draft := a.formDraft(user.ID, user.ID)
 	if draft == nil {
 		return
@@ -92,26 +92,32 @@ func (a *App) promptForm(ctx context.Context, user *models.User, editID int) {
 	prefix := fmt.Sprintf("form:%s:%d:", draft.ID, draft.Revision)
 	var markup models.ReplyMarkup
 	if field.Type == "select" || field.Type == "radio" || field.Type == "checkbox" {
-		rows := make([][]models.InlineKeyboardButton, 0, len(field.Options)+3)
+		var rows [][]models.InlineKeyboardButton
+		if field.Type == "checkbox" {
+			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "完成选择", "完成選擇", "Done"), CallbackData: prefix + "done"}})
+		}
+		var choices []models.InlineKeyboardButton
 		chosen, _ := draft.Values[field.Key].([]string)
 		for index, option := range field.Options {
 			label := option
 			if slices.Contains(chosen, option) {
 				label = "✓ " + label
 			}
-			rows = append(rows, []models.InlineKeyboardButton{{Text: truncate(label, 60), CallbackData: prefix + "option:" + strconv.Itoa(index)}})
+			choices = append(choices, models.InlineKeyboardButton{Text: truncate(label, 60), CallbackData: prefix + "option:" + strconv.Itoa(index)})
 		}
+		rows = append(rows, compactActionRows(choices)...)
 		if field.Type == "checkbox" {
 			text += "\n" + tr(locale, "可选择多项，选好后点击「完成选择」。", "可選擇多項，選好後點擊「完成選擇」。", "Choose one or more options, then tap Done.")
-			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "完成选择", "完成選擇", "Done"), CallbackData: prefix + "done"}})
 		}
+		var tools []models.InlineKeyboardButton
 		if !field.Required {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "跳过", "略過", "Skip"), CallbackData: prefix + "skip"}})
+			tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "跳过", "略過", "Skip"), CallbackData: prefix + "skip"})
 		}
 		if draft.Step > 0 {
-			rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "‹ 上一项", "‹ 上一項", "‹ Previous"), CallbackData: prefix + "back"}})
+			tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "‹ 上一项", "‹ 上一項", "‹ Previous"), CallbackData: prefix + "back"})
 		}
-		rows = append(rows, []models.InlineKeyboardButton{{Text: tr(locale, "取消", "取消", "Cancel"), CallbackData: prefix + "cancel"}})
+		tools = append(tools, models.InlineKeyboardButton{Text: tr(locale, "取消填写", "取消填寫", "Cancel input"), CallbackData: prefix + "cancel"})
+		rows = append(rows, compactActionRows(tools)...)
 		markup = models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	} else {
 		text += "\n\n" + tr(locale, "请回复这条消息填写内容。", "請回覆這則訊息填寫內容。", "Reply to this message with your answer.")
@@ -120,6 +126,7 @@ func (a *App) promptForm(ctx context.Context, user *models.User, editID int) {
 		}
 		markup = models.ForceReply{ForceReply: true, Selective: true}
 	}
+	text = inputNotice(text, notice...)
 	if editID > 0 {
 		a.edit(ctx, draft.ChatID, editID, text, markup)
 		return
@@ -173,8 +180,7 @@ func (a *App) acceptFormValue(ctx context.Context, user *models.User, draft *ses
 	value, err := manualform.Value(field, input)
 	if err != nil {
 		locale := a.sessions.Get(user.ID).Locale
-		a.send(ctx, draft.ChatID, tr(locale, "填写内容不符合要求，请检查必填、格式、长度或范围后重试。", "填寫內容不符合要求，請檢查必填、格式、長度或範圍後重試。", "Check the required value, format, length, or range and try again."), nil)
-		a.promptForm(ctx, user, 0)
+		a.promptForm(ctx, user, 0, tr(locale, "填写内容不符合要求，请检查必填、格式、长度或范围后重试。", "填寫內容不符合要求，請檢查必填、格式、長度或範圍後重試。", "Check the required value, format, length, or range and try again."))
 		return
 	}
 	accepted := false
@@ -268,7 +274,7 @@ func (a *App) handleFormCallback(ctx context.Context, query *models.CallbackQuer
 		if !a.sessionOK(ctx, message.Chat.ID, result.Err) {
 			return
 		}
-		a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "已取消填写资料。", "已取消填寫資料。", "Form cancelled."), a.homeKeyboard(locale))
+		a.edit(ctx, message.Chat.ID, message.ID, tr(locale, "已取消填写资料，未创建订单。", "已取消填寫資料，未建立訂單。", "Form cancelled. No order was created."), cancelInputKeyboard(locale, session.State{Purchase: draft}))
 	case "back":
 		a.moveFormBack(ctx, &query.From, draft)
 	case "skip":

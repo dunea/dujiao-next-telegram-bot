@@ -243,6 +243,17 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
+func quantityInputKeyboard(locale string, q *session.QuantityInput) models.InlineKeyboardMarkup {
+	label := tr(locale, "‹ 返回数量选择", "‹ 返回數量選擇", "‹ Quantity")
+	if q.PurchaseID != "" {
+		label = tr(locale, "‹ 返回购买确认", "‹ 返回購買確認", "‹ Review purchase")
+	}
+	return models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+		{Text: label, CallbackData: "qtyback:" + q.ID},
+		{Text: tr(locale, "‹ 返回首页", "‹ 返回首頁", "‹ Home"), CallbackData: "home"},
+	}}}
+}
+
 func (a *App) promptQuantity(ctx context.Context, userID int64, q *session.QuantityInput) {
 	locale := a.sessions.Get(userID).Locale
 	product, err := a.api.Product(ctx, locale, strconv.FormatInt(userID, 10), q.ProductID)
@@ -253,7 +264,7 @@ func (a *App) promptQuantity(ctx context.Context, userID int64, q *session.Quant
 	}
 	minimum, maximum, _ := purchaseQuantityBounds(product, q.SKUID)
 	text := tr(locale, "请输入购买数量，例如 2500。", "請輸入購買數量，例如 2500。", "Enter a quantity, e.g. 2500.") + "\n" + quantityRange(locale, minimum, maximum)
-	keyboard := models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "qtyback:" + q.ID}}}}
+	keyboard := quantityInputKeyboard(locale, q)
 	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: userID, Text: text, ReplyMarkup: keyboard})
 	if err != nil {
 		a.logger.Warn("quantity prompt could not be displayed")
@@ -289,7 +300,7 @@ func (a *App) restoreQuantityPrompt(ctx context.Context, userID int64, q *sessio
 }
 
 func (a *App) quantityInputError(ctx context.Context, q *session.QuantityInput, locale, text string) {
-	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: q.ChatID, Text: text, ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{{Text: tr(locale, "‹ 返回", "‹ 返回", "‹ Back"), CallbackData: "qtyback:" + q.ID}}}}})
+	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: q.ChatID, Text: text, ReplyMarkup: quantityInputKeyboard(locale, q)})
 	if err != nil {
 		a.logger.Warn("quantity validation message could not be displayed")
 		return

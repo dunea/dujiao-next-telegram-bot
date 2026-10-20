@@ -58,6 +58,7 @@ func TestGiftCardKnownErrorsRetryWithoutEchoingCode(t *testing.T) {
 			fixture.giftFailureCode = errorCode
 			formCallback(app, 42, 10, "giftcard")
 			input := app.sessions.Get(42).GiftCard
+			before := len(fixture.texts)
 			app.handleUpdate(context.Background(), nil, giftCardMessage("SECRET-FAIL-CODE", input.PromptID, 42, 42))
 			current := app.sessions.Get(42).GiftCard
 			if current == nil || current.ID == input.ID || current.PromptID == input.PromptID {
@@ -65,6 +66,9 @@ func TestGiftCardKnownErrorsRetryWithoutEchoingCode(t *testing.T) {
 			}
 			fixture.mu.Lock()
 			defer fixture.mu.Unlock()
+			if len(fixture.texts) != before+1 || !strings.Contains(fixture.markups[len(fixture.markups)-1], `"force_reply":true`) {
+				t.Fatal("known rejection must combine error and new reply prompt")
+			}
 			if strings.Contains(strings.Join(fixture.texts, "\n"), "SECRET-FAIL-CODE") || strings.Contains(logs.String(), "SECRET-FAIL-CODE") {
 				t.Fatal("gift card code leaked in outgoing message or logs")
 			}

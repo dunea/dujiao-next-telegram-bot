@@ -103,9 +103,10 @@ func (a *App) handleCouponCallback(ctx context.Context, query *models.CallbackQu
 	}
 }
 
-func (a *App) promptCoupon(ctx context.Context, user *models.User, draft *session.PurchaseDraft) {
+func (a *App) promptCoupon(ctx context.Context, user *models.User, draft *session.PurchaseDraft, notice ...string) {
 	locale := a.sessions.Get(user.ID).Locale
 	text := tr(locale, "请回复这条消息输入优惠码。发送 /back 返回订单预览，/cancel 取消本次购买。", "請回覆這則訊息輸入優惠碼。傳送 /back 返回訂單預覽，/cancel 取消本次購買。", "Reply with your coupon code. Send /back to return to the preview or /cancel to cancel this purchase.")
+	text = inputNotice(text, notice...)
 	message, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: draft.ChatID, Text: text, ReplyMarkup: models.ForceReply{ForceReply: true, Selective: true}})
 	if err != nil {
 		a.logger.Error("send coupon prompt", "error", err)
@@ -134,8 +135,7 @@ func (a *App) handleCouponMessage(ctx context.Context, message *models.Message) 
 	}
 	code := strings.TrimSpace(message.Text)
 	if !back && (code == "" || utf8.RuneCountInString(code) > 128 || strings.ContainsAny(code, "\r\n\t")) {
-		a.send(ctx, message.Chat.ID, tr(locale, "优惠码需为 1–128 个字符的单行文字。", "優惠碼需為 1–128 個字元的單行文字。", "Use a single-line coupon code of 1–128 characters."), nil)
-		a.promptCoupon(ctx, message.From, draft)
+		a.promptCoupon(ctx, message.From, draft, tr(locale, "优惠码需为 1–128 个字符的单行文字。", "優惠碼需為 1–128 個字元的單行文字。", "Use a single-line coupon code of 1–128 characters."))
 		return
 	}
 	changed := false
