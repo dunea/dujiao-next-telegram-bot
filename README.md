@@ -46,6 +46,8 @@
 
 开发版另补齐[支付/充值回调故障与 Telegram 全链路验收](docs/callbacks-and-e2e.md)：通知回执去重、Redis 重启恢复、Telegram 限流/断连处理；`make telegram-e2e` 在两种数据库上运行真实 Bot + 官方 v1.5.0 + 隔离 Telegram/支付模拟端点，不需要真实 Token。响应丢失时仍可能重复通知，不承诺消息恰好一次。
 
+`make telegram-e2e` 还覆盖自动卡密分支；`make soak-test` 默认在两种数据库各运行五分钟持续负载，检查通知恢复、延迟、限流及资源预算。模型、门槛和边界见[持续压力与自动卡密验收](docs/soak-and-auto-delivery.md)，不代表商店支付 TPS 或真实 Telegram 发送能力。
+
 ## 环境要求
 
 - Dujiao-Next `v1.5.0` 或兼容 Channel API 的版本

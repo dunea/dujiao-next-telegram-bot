@@ -93,7 +93,7 @@ BOT_UPGRADE_REDIS_URL=redis://127.0.0.1:16379 make upgrade-test
 
 升级前停止 Bot，备份商店数据库、稳定加密密钥、Redis 一致性数据和审计卷。先在商家测试环境运行只读诊断，按上游对应版本的官方迁移规则升级，再用同一已有测试用户复查。不要改商店地址/Channel Key 来制造新命名空间，不要清空 Redis、恢复旧发送游标或换密钥绕过未决保护。
 
-三个真实上游版本的隔离联调及 SQLite/PostgreSQL 升级链已由下述入口覆盖；v1.5.0 的支付/充值回调、人工履约及 Telegram 交互另由 `make telegram-e2e` 覆盖。仍需公网 Telegram、商家实际支付网关、自动卡密和更多提供方分支验收。这些测试没有操作真实资金，不代表所有商店配置或自定义 fork 均兼容，也不承诺生产数据库可随意降级。详细运维原则仍见 [RELEASE.md](../RELEASE.md)。
+三个真实上游版本的隔离联调及 SQLite/PostgreSQL 升级链已由下述入口覆盖；v1.5.0 的支付/充值回调、人工/自动卡密履约及 Telegram 交互另由 `make telegram-e2e` 覆盖，有界持续负载见[专项验收](soak-and-auto-delivery.md)。仍需公网 Telegram、商家实际支付网关及更多提供方分支验收。这些测试没有操作真实资金，不代表所有商店配置或自定义 fork 均兼容，也不承诺生产数据库可随意降级。详细运维原则仍见 [RELEASE.md](../RELEASE.md)。
 
 ## 三个真实上游版本与数据库迁移
 

@@ -5,9 +5,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/dujiao-bot ./cmd/bot \
- && CGO_ENABLED=0 go build -trimpath -o /out/e2e-peer ./cmd/e2e-peer
+ && CGO_ENABLED=0 go build -trimpath -o /out/e2e-peer ./cmd/e2e-peer \
+ && CGO_ENABLED=0 go build -trimpath -o /out/e2e-load ./cmd/e2e-load
 
 FROM alpine:3.22
 COPY --from=build /out/dujiao-bot /usr/local/bin/dujiao-bot
 COPY --from=build /out/e2e-peer /usr/local/bin/e2e-peer
+COPY --from=build /out/e2e-load /usr/local/bin/e2e-load
 ENTRYPOINT ["/usr/local/bin/e2e-peer"]

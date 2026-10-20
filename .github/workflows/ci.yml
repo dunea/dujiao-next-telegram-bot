@@ -36,7 +36,7 @@ jobs:
         run: test -z "$(gofmt -l .)"
 
       - name: Check maintenance script syntax
-        run: sh -n scripts/acceptance.sh scripts/package-release.sh scripts/test-upgrade.sh scripts/test-real-upstream.sh scripts/test-telegram-e2e.sh
+        run: sh -n scripts/acceptance.sh scripts/package-release.sh scripts/test-upgrade.sh scripts/test-real-upstream.sh scripts/test-telegram-e2e.sh scripts/test-soak.sh
 
       - name: Vet
         run: |
@@ -135,6 +135,12 @@ jobs:
         env:
           DUJIAO_REAL_DB: ${{ matrix.database }}
         run: sh scripts/test-telegram-e2e.sh | tee telegram-e2e-${{ matrix.database }}.log
+      - name: Run bounded sustained load and Telegram fault recovery
+        shell: bash
+        env:
+          DUJIAO_REAL_DB: ${{ matrix.database }}
+          DUJIAO_SOAK_DURATION: 90s
+        run: sh scripts/test-soak.sh | tee soak-${{ matrix.database }}.log
       - name: Preserve sanitized test result only
         if: always()
         uses: actions/upload-artifact@v6
@@ -143,6 +149,7 @@ jobs:
           path: |
             real-upstream-${{ matrix.database }}.log
             telegram-e2e-${{ matrix.database }}.log
+            soak-${{ matrix.database }}.log
           if-no-files-found: ignore
           retention-days: 14
           # Never upload temporary configs, databases, dumps or backend logs.

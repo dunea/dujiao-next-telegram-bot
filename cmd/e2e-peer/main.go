@@ -46,6 +46,7 @@ type peer struct {
 	payments                  []payment
 	sequence, updateID        int
 	photos, polls, pollErrors int
+	send429, send5xx          int
 	fault                     fault
 	secret                    string
 }
@@ -53,6 +54,7 @@ type snapshot struct {
 	Messages                                  []message
 	Payments                                  []payment
 	Photos, Polls, PollErrors, PendingUpdates int
+	Send429, Send5xx                          int
 }
 
 func main() {
@@ -95,7 +97,7 @@ func (p *peer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/test/state" && r.Method == "GET" {
 		p.mu.Lock()
 		defer p.mu.Unlock()
-		write(w, snapshot{Messages: append([]message{}, p.messages...), Payments: append([]payment{}, p.payments...), Photos: p.photos, Polls: p.polls, PollErrors: p.pollErrors, PendingUpdates: len(p.updates)})
+		write(w, snapshot{Messages: append([]message{}, p.messages...), Payments: append([]payment{}, p.payments...), Photos: p.photos, Polls: p.polls, PollErrors: p.pollErrors, PendingUpdates: len(p.updates), Send429: p.send429, Send5xx: p.send5xx})
 		return
 	}
 	if r.URL.Path == "/test/update" && r.Method == "POST" {
@@ -158,6 +160,14 @@ func (p *peer) telegram(w http.ResponseWriter, r *http.Request) {
 	if apply {
 		p.fault.Times--
 		if !f.Drop {
+			if method == "sendMessage" {
+				if f.Code == 429 {
+					p.send429++
+				}
+				if f.Code >= 500 {
+					p.send5xx++
+				}
+			}
 			if method == "getUpdates" {
 				p.pollErrors++
 			}

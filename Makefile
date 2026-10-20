@@ -1,4 +1,4 @@
-.PHONY: build test lint verify acceptance compatibility upstream-audit upgrade-test real-upstream-test telegram-e2e release run integration-up integration-down demo-up demo-down loadtest
+.PHONY: build test lint verify acceptance compatibility upstream-audit upgrade-test real-upstream-test telegram-e2e soak-test release run integration-up integration-down demo-up demo-down loadtest
 
 build:
 	go build -trimpath -o dist/dujiao-next-telegram-bot ./cmd/bot
@@ -37,6 +37,9 @@ real-upstream-test:
 
 telegram-e2e:
 	sh scripts/test-telegram-e2e.sh
+
+soak-test:
+	sh scripts/test-soak.sh
 
 release:
 	sh scripts/package-release.sh

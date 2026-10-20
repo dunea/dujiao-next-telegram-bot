@@ -34,6 +34,7 @@ type peerState struct {
 	Messages                                  []tgMessage
 	Payments                                  []struct{ No, Trade, Amount string }
 	Photos, Polls, PollErrors, PendingUpdates int
+	Send429, Send5xx                          int
 }
 type telegramFlow struct {
 	s               *stack
@@ -41,16 +42,13 @@ type telegramFlow struct {
 	peerURL, botURL string
 	cursor          int
 	inputID         int
+	config          fixture
+	paymentChannel  uint
+	gatewaySecret   string
 }
 
-func TestTelegramEndToEnd(t *testing.T) {
-	if os.Getenv("DUJIAO_E2E_TEST") != "1" {
-		t.Skip("explicit isolated Telegram E2E opt-in required")
-	}
-	driver := os.Getenv("DUJIAO_REAL_DB")
-	if driver != "sqlite" && driver != "postgres" {
-		t.Fatal("DUJIAO_REAL_DB must be sqlite or postgres")
-	}
+func newTelegramFlow(t *testing.T, driver string) *telegramFlow {
+	t.Helper()
 	s := newStack(t, driver)
 	s.start(2, "telegram")
 	f := s.seed()
@@ -109,6 +107,13 @@ func TestTelegramEndToEnd(t *testing.T) {
 		}
 	})
 	flow.healthy()
+	flow.config, flow.paymentChannel, flow.gatewaySecret = f, channel.ID, secret
+	return flow
+}
+
+func TestTelegramEndToEnd(t *testing.T) {
+	flow := newTelegramFlow(t, telegramDriver(t))
+	s, f, secret := flow.s, flow.config, flow.gatewaySecret
 	flow.command("/start")
 	flow.waitText("欢迎")
 	flow.command("/wallet")
@@ -117,7 +122,7 @@ func TestTelegramEndToEnd(t *testing.T) {
 	menu := flow.waitButton("rechargepick:")
 	flow.click(menu, button(menu, "rechargepick:", ":100.00"))
 	menu = flow.waitButton("rechargepay:")
-	flow.click(menu, button(menu, "rechargepay:", fmt.Sprint(channel.ID)))
+	flow.click(menu, button(menu, "rechargepay:", fmt.Sprint(flow.paymentChannel)))
 	flow.waitText("103.50 CNY")
 	s.wait(func() bool { state := flow.state(); return len(state.Payments) == 1 && state.Photos > 0 })
 	state := flow.state()
@@ -153,7 +158,7 @@ func TestTelegramEndToEnd(t *testing.T) {
 	flow.click(menu, button(menu, "formconfirm:", ""))
 	menu = flow.waitButton("pay:")
 	// Select the online gateway (not wallet-only), entirely via returned buttons.
-	flow.click(menu, button(menu, "pay:", fmt.Sprintf(":%d:0", channel.ID)))
+	flow.click(menu, button(menu, "pay:", fmt.Sprintf(":%d:0", flow.paymentChannel)))
 	flow.waitText("支付")
 	s.wait(func() bool { return len(flow.state().Payments) == 2 })
 	orders, err := c.Orders(ctx, strconv.FormatInt(buyerID, 10), "zh-CN", "", 1, 20)
@@ -234,6 +239,18 @@ func TestTelegramEndToEnd(t *testing.T) {
 		}
 	}
 	t.Log("PASS: real Bot polling/buttons -> real Dujiao-Next -> signed provider callbacks -> real queue -> Bot receipts -> isolated Telegram API; recharge/order/fulfillment, faults and restart verified")
+}
+
+func telegramDriver(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("DUJIAO_E2E_TEST") != "1" {
+		t.Skip("explicit isolated Telegram E2E opt-in required")
+	}
+	driver := os.Getenv("DUJIAO_REAL_DB")
+	if driver != "sqlite" && driver != "postgres" {
+		t.Fatal("DUJIAO_REAL_DB must be sqlite or postgres")
+	}
+	return driver
 }
 
 func (f *telegramFlow) control(path string, input, target any) {
